@@ -112,7 +112,7 @@ jobs:
       - name: Engine-Starttest (ohne MSYS2, nur mit gebündelten DLLs)
         shell: python
         run: |
-          import subprocess, sys, time
+          import subprocess, sys, threading, time
           from pathlib import Path
           sys.path.insert(0, "launcher")
           from luairplay.engine import engine_environment
@@ -134,13 +134,24 @@ jobs:
               # wie weit die Engine kam
               p = subprocess.Popen([str(exe), "-n", "Lu CI", "-nh", "-d", *args],
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-              time.sleep(8)
+              # warten, bis die Engine bereit ist (der erste Start scannt die GStreamer-Plugins)
+              lines, t0 = [], time.time()
+              reader = threading.Thread(target=lambda: lines.extend(
+                  l.decode("utf-8", "replace") for l in iter(p.stdout.readline, b"")), daemon=True)
+              reader.start()
+              while time.time() - t0 < 60 and p.poll() is None and \
+                      not any("Initialized server socket" in l for l in lines):
+                  time.sleep(0.5)
+              time.sleep(1)
               rc = p.poll()
               if rc is None:
                   p.terminate()
-              out = p.communicate()[0].decode("utf-8", "replace")
+              p.wait()
+              reader.join(5)
+              out = "".join(lines)
               print(out)
-              print("--- Engine:", "lief (beendet durch Test)" if rc is None else f"abgestürzt/beendet, Code {rc & 0xFFFFFFFF:#010x}")
+              state = "lief" if rc is None else f"abgestürzt/beendet, Code {rc & 0xFFFFFFFF:#010x}"
+              print(f"--- Engine: {state}, bereit nach {time.time() - t0:.1f} s")
               return out
 
           out = run("-vs", "fakesink", "-as", "fakesink")

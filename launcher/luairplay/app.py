@@ -210,7 +210,8 @@ class App:
         self.dot.itemconfigure(self.dot_id, fill=colors.get(s, MUTED))
         title, sub = {
             "stopped": ("Gestoppt", "Der Empfänger ist aus. Klicke auf „Starten“."),
-            "starting": ("Wird gestartet …", "Einen Moment, der Empfänger meldet sich im Netzwerk an."),
+            "starting": ("Wird gestartet …", "Einen Moment, der Empfänger meldet sich im Netzwerk an. "
+                         "Der allererste Start kann bis zu einer Minute dauern."),
             "ready": ("Bereit für AirPlay", f"Wähle auf deinem Gerät „{name}“."),
             "connected": ("Verbunden", f"{self.client or 'Ein Gerät'} hat sich verbunden."),
             "mirroring": ("Bildschirm wird gespiegelt", f"{self.client or 'Ein Gerät'} spiegelt gerade."),
