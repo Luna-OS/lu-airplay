@@ -176,6 +176,10 @@ class App:
                            wraplength=360)
             lbl.pack(side="left", padx=10, fill="x")
             self.step_lbls.append(lbl)
+        help_lbl = tk.Label(self.steps, text="Wird nicht angezeigt? Hilfe …", font=self.f_small, bg=BG,
+                            fg=ACCENT_HI, cursor="hand2")
+        help_lbl.pack(anchor="w", padx=34, pady=(4, 0))
+        help_lbl.bind("<Button-1>", lambda e: HelpDialog(self))
 
         # Name
         name_box = tk.Frame(self.root, bg=BG)
@@ -361,8 +365,8 @@ class App:
             self.settings.save()
             self.restart_if_running()
 
-    def open_settings(self) -> None:
-        SettingsDialog(self)
+    def open_settings(self, tab: int = 0) -> None:
+        SettingsDialog(self, tab)
 
     def open_log(self) -> None:
         if self.log_window and self.log_window.top.winfo_exists():
@@ -378,7 +382,7 @@ class App:
 
 # ----------------------------------------------------------------------- #
 class SettingsDialog:
-    def __init__(self, app: App) -> None:
+    def __init__(self, app: App, tab: int = 0) -> None:
         self.app = app
         s = app.settings
         top = self.top = tk.Toplevel(app.root, bg=BG)
@@ -396,6 +400,7 @@ class SettingsDialog:
         nb.add(audio, text="Ton")
         nb.add(access, text="Zugriff")
         nb.add(expert, text="Erweitert")
+        nb.select(tab)
 
         self.v = {
             "video": tk.BooleanVar(value=s.video),
@@ -468,7 +473,8 @@ class SettingsDialog:
         check(access, "autostart", "Empfänger beim Öffnen der App automatisch starten")
         if IS_WINDOWS:
             tk.Frame(access, bg=BG, height=8).pack()
-            app._button(access, "Windows-Firewall freigeben", self._firewall).pack(anchor="w")
+            app._button(access, "Windows-Firewall reparieren",
+                        lambda: repair_firewall(app, self.top)).pack(anchor="w")
             tk.Label(access, text="Nötig, wenn der Empfänger auf dem iPhone nicht erscheint.", bg=BG,
                      fg=MUTED, font=app.f_small).pack(anchor="w", pady=(4, 0))
 
@@ -500,21 +506,6 @@ class SettingsDialog:
     def _regen_pin(self) -> None:
         self.new_pin = random_pin()
         self.pin_lbl.configure(text=f"Aktueller Code: {self.new_pin}")
-
-    def _firewall(self) -> None:
-        engine = find_engine()
-        if not engine:
-            messagebox.showerror(APP_TITLE, "Engine nicht gefunden.", parent=self.top)
-            return
-        import ctypes
-        # Alle Profile: Windows stuft Heim-WLANs oft als "Öffentlich" ein
-        params = (f'advfirewall firewall add rule name="Lu AirPlay (App)" dir=in action=allow '
-                  f'program="{engine}" enable=yes profile=any')
-        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "netsh", params, None, 0)
-        if rc <= 32:
-            messagebox.showerror(APP_TITLE, "Firewall-Regel konnte nicht angelegt werden.", parent=self.top)
-        else:
-            messagebox.showinfo(APP_TITLE, "Firewall-Regel für Lu AirPlay wurde angelegt.", parent=self.top)
 
     def _open_config(self) -> None:
         import subprocess
@@ -552,6 +543,71 @@ class SettingsDialog:
         s.save()
         self.top.destroy()
         self.app.restart_if_running()
+
+
+def repair_firewall(app: "App", parent: tk.Misc) -> None:
+    """Alle Firewall-Regeln für die Engine entfernen (auch automatisch angelegte Blockier-Regeln,
+    die entstehen, wenn Windows' Rückfrage "Zugriff zulassen" abgebrochen wurde) und eine
+    Erlauben-Regel für alle Netzwerkprofile anlegen. Fragt nach Administratorrechten."""
+    engine = find_engine()
+    if not engine:
+        messagebox.showerror(APP_TITLE, "Engine nicht gefunden.", parent=parent)
+        return
+    import ctypes
+    params = (f'/c netsh advfirewall firewall delete rule name=all program="{engine}" & '
+              f'netsh advfirewall firewall add rule name="Lu AirPlay (App)" dir=in action=allow '
+              f'program="{engine}" enable=yes profile=any')
+    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", params, None, 0)
+    if rc <= 32:
+        messagebox.showerror(APP_TITLE, "Die Firewall konnte nicht eingerichtet werden "
+                                        "(Administratorrechte abgelehnt?).", parent=parent)
+        return
+    messagebox.showinfo(APP_TITLE, "Die Windows-Firewall ist jetzt für Lu AirPlay freigegeben.\n"
+                                   "Der Empfänger wird neu gestartet.", parent=parent)
+    app.restart_if_running()
+
+
+class HelpDialog:
+    """Checkliste, wenn iPhone/Mac den Empfänger nicht anzeigen."""
+
+    def __init__(self, app: "App") -> None:
+        top = self.top = tk.Toplevel(app.root, bg=BG)
+        top.title("Hilfe – " + APP_TITLE)
+        top.transient(app.root)
+        top.resizable(False, False)
+        body = tk.Frame(top, bg=BG, padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text="Empfänger wird nicht angezeigt?", font=app.f_status, bg=BG,
+                 fg=FG).pack(anchor="w")
+        net = app.network or "noch unbekannt (Empfänger läuft nicht)"
+        tips = [
+            f"Dieser Computer kündigt sich an unter: {net}. iPhone und Mac müssen im selben "
+            "WLAN sein. Die ersten drei Zahlengruppen der IP sollten übereinstimmen "
+            "(iPhone: Einstellungen → WLAN → ⓘ).",
+            "Kein Gast-WLAN verwenden, VPN auf PC und iPhone testweise ausschalten.",
+            "Stimmt das Netz nicht, unter Einstellungen → Erweitert → Netzwerk die richtige IP wählen.",
+        ]
+        if IS_WINDOWS:
+            tips.append("Windows blockiert den Empfänger oft, wenn die Rückfrage „Zugriff zulassen“ "
+                        "einmal abgebrochen wurde. „Firewall reparieren“ behebt das "
+                        "(Administratorrechte nötig).")
+        tips.append("Virenscanner mit eigener Firewall (Norton, Kaspersky, Avast …) müssen "
+                    "Lu AirPlay ebenfalls erlauben.")
+        for t in tips:
+            row = tk.Frame(body, bg=BG)
+            row.pack(fill="x", pady=4)
+            tk.Label(row, text="•", bg=BG, fg=ACCENT_HI, font=app.f_text).pack(side="left", anchor="n")
+            tk.Label(row, text=t, bg=BG, fg=FG, font=app.f_text, justify="left", anchor="w",
+                     wraplength=400).pack(side="left", padx=8, fill="x")
+        btns = tk.Frame(body, bg=BG)
+        btns.pack(fill="x", pady=(14, 0))
+        if IS_WINDOWS:
+            app._button(btns, "Firewall reparieren", lambda: repair_firewall(app, top),
+                        primary=True).pack(side="left")
+        app._button(btns, "Netzwerk wählen", lambda: (top.destroy(), app.open_settings(tab=3))
+                    ).pack(side="left", padx=8)
+        app._button(btns, "Schließen", top.destroy).pack(side="right")
+        top.focus_set()
 
 
 # ----------------------------------------------------------------------- #
