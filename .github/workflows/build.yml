@@ -141,8 +141,17 @@ jobs:
           out = run("-vs", "fakesink", "-as", "fakesink")
           assert "Initialized server socket" in out, "Engine ist nicht gestartet"
           assert "failed to create video pipeline" not in out, "Video-Pipeline fehlerhaft"
-          # Echte Ausgabe: auf CI-Rechnern ohne GPU evtl. nicht möglich, daher nur informativ
-          run("-vs", "d3d11videosink", "-as", "wasapisink")
+
+          # Genau so, wie die App die Engine startet (inkl. -key/-rc): 1. Start legt den
+          # Schlüssel an, 2. Start muss ihn wieder einlesen
+          from luairplay.engine import build_args
+          from luairplay.settings import Settings
+          exe = bundle / "bin" / "uxplay.exe"
+          args = build_args(Settings(name="Lu AirPlay (CI)"), exe)[1:]
+          for i in (1, 2):
+              out = run(*args)
+              assert "Initialized server socket" in out, f"Engine mit App-Argumenten nicht gestartet (Start {i})"
+              assert ("new Public Key" in out) == (i == 1), f"Schlüsseldatei falsch behandelt (Start {i})"
 
       - name: Oberfläche bauen (PyInstaller)
         run: |

@@ -305,7 +305,10 @@ class App:
         elif ev.kind == "exited":
             if self.stopping:
                 return
-            hint = self.error_text or "Die Engine wurde unerwartet beendet."
+            self.log_lines.append(f"! Engine beendet (Code {ev.text})")
+            if self.log_window:
+                self.log_window.append(f"! Engine beendet (Code {ev.text})")
+            hint = self.error_text or f"Die Engine wurde unerwartet beendet (Code {ev.text})."
             self._set_state("error", hint + "  (Details unter „Protokoll“)")
 
     # ------------------------------------------------------------- Aktionen --
