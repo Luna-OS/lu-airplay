@@ -27,11 +27,25 @@ mkdir -p "$BIN" "$PLUGINS" "$LIBEXEC"
 cp "$ENGINE_EXE" "$BIN/"
 cp "$PREFIX/libexec/gstreamer-1.0/gst-plugin-scanner.exe" "$LIBEXEC/"
 
-# Alle Plugins der benötigten GStreamer-Pakete übernehmen
-for pkg in gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav; do
-    pacman -Qlq "$PKG_PREFIX-$pkg" | grep -E '/lib/gstreamer-1\.0/[^/]+\.dll$' | while read -r dll; do
+# Nur die Plugins bündeln, die die Engine wirklich nutzt. Alle ~240 Plugins mitzuliefern
+# macht den Start langsam und instabil: beim ersten Start scannt GStreamer jedes Plugin,
+# und Hardware-Plugins (nvcodec, qsv, amfcodec, mediafoundation, ...) können dabei auf
+# manchen Rechnern abstürzen.
+PLUGIN_WHITELIST="
+  coreelements app playback typefindfunctions pbtypes videoconvertscale videorate
+  audioconvert audioresample volume opengl pango subparse rawparse
+  autodetect level directsound videofilter jpeg png imagefreeze isomp4 audioparsers
+  rtp udp adaptivedemux2 soup
+  d3d11 d3d12 videoparsersbad wasapi wasapi2 debugutilsbad hls
+  libav
+"
+for name in $PLUGIN_WHITELIST; do
+    dll="$PREFIX/lib/gstreamer-1.0/libgst$name.dll"
+    if [ -f "$dll" ]; then
         cp "$dll" "$PLUGINS/"
-    done
+    else
+        echo "Hinweis: Plugin nicht installiert: libgst$name.dll"
+    fi
 done
 
 # DLL-Abhängigkeiten (rekursiv, nur aus dem MSYS2-Prefix) mit ntldd einsammeln

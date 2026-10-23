@@ -75,7 +75,7 @@ jobs:
           # einzeln laden statt parallel, damit die Mirrors nicht mit 429 antworten
           sed -i 's/^#\?ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
           pkgs="git"
-          for p in gcc cmake ninja pkgconf ntldd openssl libplist gstreamer gst-plugins-base \
+          for p in gcc gdb cmake ninja pkgconf ntldd openssl libplist gstreamer gst-plugins-base \
                    gst-plugins-good gst-plugins-bad gst-libav; do
             pkgs="$pkgs mingw-w64-ucrt-x86_64-$p"
           done
@@ -112,7 +112,7 @@ jobs:
       - name: Engine-Starttest (ohne MSYS2, nur mit gebündelten DLLs)
         shell: python
         run: |
-          import subprocess, sys, time
+          import subprocess, sys, threading, time
           from pathlib import Path
           sys.path.insert(0, "launcher")
           from luairplay.engine import engine_environment
@@ -130,12 +130,28 @@ jobs:
               exe = bundle / "bin" / "uxplay.exe"
               env = engine_environment(exe)
               env["PATH"] = str(exe.parent) + ";C:\\Windows\\System32;C:\\Windows"
-              p = subprocess.Popen([str(exe), "-n", "Lu CI", "-nh", *args],
+              # -d: Debug-Ausgabe wird zeilenweise geflusht, zeigt also auch bei einem Absturz,
+              # wie weit die Engine kam
+              p = subprocess.Popen([str(exe), "-n", "Lu CI", "-nh", "-d", *args],
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-              time.sleep(8)
-              p.terminate()
-              out = p.communicate()[0].decode("utf-8", "replace")
+              # warten, bis die Engine bereit ist (der erste Start scannt die GStreamer-Plugins)
+              lines, t0 = [], time.time()
+              reader = threading.Thread(target=lambda: lines.extend(
+                  l.decode("utf-8", "replace") for l in iter(p.stdout.readline, b"")), daemon=True)
+              reader.start()
+              while time.time() - t0 < 60 and p.poll() is None and \
+                      not any("Initialized server socket" in l for l in lines):
+                  time.sleep(0.5)
+              time.sleep(1)
+              rc = p.poll()
+              if rc is None:
+                  p.terminate()
+              p.wait()
+              reader.join(5)
+              out = "".join(lines)
               print(out)
+              state = "lief" if rc is None else f"abgestürzt/beendet, Code {rc & 0xFFFFFFFF:#010x}"
+              print(f"--- Engine: {state}, bereit nach {time.time() - t0:.1f} s")
               return out
 
           out = run("-vs", "fakesink", "-as", "fakesink")
@@ -152,6 +168,17 @@ jobs:
               out = run(*args)
               assert "Initialized server socket" in out, f"Engine mit App-Argumenten nicht gestartet (Start {i})"
               assert ("new Public Key" in out) == (i == 1), f"Schlüsseldatei falsch behandelt (Start {i})"
+
+      - name: Absturzanalyse mit gdb (nur wenn der Starttest fehlschlägt)
+        if: failure()
+        shell: msys2 {0}
+        run: |
+          for i in 1 2 3; do
+            echo "===== gdb-Lauf $i ====="
+            timeout 25 gdb -q -batch -ex "set pagination off" -ex run -ex "info registers rip" \
+              -ex "thread apply all bt 25" \
+              --args build/engine/uxplay.exe -n "Lu CI" -nh -d -vs fakesink -as fakesink || true
+          done
 
       - name: Oberfläche bauen (PyInstaller)
         run: |
