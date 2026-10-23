@@ -94,7 +94,8 @@ packaging/           Windows-Installer (Inno Setup), Linux-Desktop-Eintrag
 .github/workflows/   CI: Linux-Build + Tests, Windows-Installer + ZIP, Release bei Tag v*
 ```
 
-Neue Version veröffentlichen: Version in `launcher/luairplay/__init__.py` anheben, dann
+Neue Version veröffentlichen: Version in `launcher/luairplay/__init__.py` anheben, dann entweder
+unter **Actions → Build → Run workflow** die Version eintragen (z. B. `1.0.1`) oder
 `git tag v1.0.1 && git push --tags`. Die CI baut Installer und ZIP und hängt beide an das Release.
 
 ## Lizenz und Danksagung
