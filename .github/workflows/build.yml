@@ -53,21 +53,22 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
-          install: >-
-            git
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-ntldd
-            mingw-w64-ucrt-x86_64-openssl
-            mingw-w64-ucrt-x86_64-libplist
-            mingw-w64-ucrt-x86_64-gstreamer
-            mingw-w64-ucrt-x86_64-gst-plugins-base
-            mingw-w64-ucrt-x86_64-gst-plugins-good
-            mingw-w64-ucrt-x86_64-gst-plugins-bad
-            mingw-w64-ucrt-x86_64-gst-libav
+          update: false
+
+      - name: MSYS2-Pakete installieren (mit Wiederholung bei langsamen Mirrors)
+        shell: msys2 {0}
+        run: |
+          pkgs="git"
+          for p in gcc cmake ninja pkgconf ntldd openssl libplist gstreamer gst-plugins-base \
+                   gst-plugins-good gst-plugins-bad gst-libav; do
+            pkgs="$pkgs mingw-w64-ucrt-x86_64-$p"
+          done
+          for attempt in 1 2 3; do
+            pacman -Sy --needed --noconfirm --disable-download-timeout $pkgs && exit 0
+            echo "Versuch $attempt fehlgeschlagen, neuer Versuch in 15 s ..."
+            sleep 15
+          done
+          exit 1
 
       - name: Engine bauen und mit GStreamer bündeln
         shell: msys2 {0}
