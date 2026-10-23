@@ -51,7 +51,10 @@ Name: "{userstartup}\Lu AirPlay Receiver"; Filename: "{app}\Lu AirPlay.exe"; Tas
 
 [Run]
 ; Firewall freigeben, damit iPhone/iPad den Empfänger finden und verbinden können
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lu AirPlay"""; Flags: runhidden; StatusMsg: "Firewall wird eingerichtet ..."
+; zuerst alle Regeln für die Engine entfernen – auch Blockier-Regeln, die Windows anlegt, wenn
+; die Rückfrage "Zugriff zulassen" einmal abgebrochen wurde (Blockieren gewinnt sonst)
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=all program=""{app}\engine\bin\uxplay.exe"""; Flags: runhidden; StatusMsg: "Firewall wird eingerichtet ..."
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lu AirPlay"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lu AirPlay (public)"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Lu AirPlay"" dir=in action=allow program=""{app}\engine\bin\uxplay.exe"" enable=yes profile=private,domain"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Lu AirPlay (public)"" dir=in action=allow program=""{app}\engine\bin\uxplay.exe"" enable=yes profile=public"; Flags: runhidden; Tasks: publicnet
@@ -61,6 +64,7 @@ Filename: "{app}\Lu AirPlay.exe"; Description: "{cm:LaunchProgram,Lu AirPlay Rec
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lu AirPlay"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lu AirPlay (public)"""; Flags: runhidden; RunOnceId: "RemoveFirewallRulePublic"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Lu AirPlay (App)"""; Flags: runhidden; RunOnceId: "RemoveFirewallRuleApp"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=all program=""{app}\engine\bin\uxplay.exe"""; Flags: runhidden; RunOnceId: "RemoveFirewallRulesEngine"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\engine"

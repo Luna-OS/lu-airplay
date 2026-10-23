@@ -157,6 +157,9 @@ jobs:
           out = run("-vs", "fakesink", "-as", "fakesink")
           assert "Initialized server socket" in out, "Engine ist nicht gestartet"
           assert "failed to create video pipeline" not in out, "Video-Pipeline fehlerhaft"
+          # mDNS muss eine echte IPv4 eines Netzwerkadapters ankündigen
+          announced = [l for l in out.splitlines() if l.startswith("mDNS: announcing on IPv4")]
+          assert announced and "0.0.0.0" not in announced[0], f"keine mDNS-Adresse: {announced}"
 
           # Genau so, wie die App die Engine startet (inkl. -key/-rc): 1. Start legt den
           # Schlüssel an, 2. Start muss ihn wieder einlesen
