@@ -51,24 +51,43 @@ jobs:
           submodules: recursive
 
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: UCRT64
           update: false
 
-      - name: MSYS2-Pakete installieren (mit Wiederholung bei langsamen Mirrors)
+      # Paket-Cache wiederverwenden: die MSYS2-Mirrors drosseln GitHub-Runner (HTTP 429)
+      - name: MSYS2-Paketcache laden
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.msys2.outputs.msys2-location }}\var\cache\pacman\pkg
+          key: msys2-pkg-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: msys2-pkg-
+
+      - name: MSYS2-Pakete installieren (mit Wiederholung bei gedrosselten Mirrors)
         shell: msys2 {0}
         run: |
+          # einzeln laden statt parallel, damit die Mirrors nicht mit 429 antworten
+          sed -i 's/^#\?ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
           pkgs="git"
           for p in gcc cmake ninja pkgconf ntldd openssl libplist gstreamer gst-plugins-base \
                    gst-plugins-good gst-plugins-bad gst-libav; do
             pkgs="$pkgs mingw-w64-ucrt-x86_64-$p"
           done
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5; do
+            # bereits geladene Pakete bleiben im Cache, jeder Versuch kommt weiter
             pacman -Sy --needed --noconfirm --disable-download-timeout $pkgs && exit 0
-            echo "Versuch $attempt fehlgeschlagen, neuer Versuch in 15 s ..."
-            sleep 15
+            echo "Versuch $attempt fehlgeschlagen, neuer Versuch in $((attempt * 60)) s ..."
+            sleep $((attempt * 60))
           done
           exit 1
+
+      - name: MSYS2-Paketcache speichern
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ steps.msys2.outputs.msys2-location }}\var\cache\pacman\pkg
+          key: msys2-pkg-${{ hashFiles('.github/workflows/build.yml') }}-${{ github.run_id }}
 
       - name: Engine bauen und mit GStreamer bündeln
         shell: msys2 {0}

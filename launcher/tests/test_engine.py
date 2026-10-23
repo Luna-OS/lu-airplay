@@ -69,7 +69,7 @@ class ArgsTest(unittest.TestCase):
 
     def test_defaults(self):
         a = self.args()
-        self.assertEqual(a[0], "/x/uxplay")
+        self.assertEqual(a[0], str(Path("/x/uxplay")))
         self.assertIn("-nh", a)
         self.assertEqual(a[a.index("-n") + 1], "Wohnzimmer")
         self.assertEqual(a[a.index("-s") + 1], "1920x1080@60")
