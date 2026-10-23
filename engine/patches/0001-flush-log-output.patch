@@ -1,0 +1,13 @@
+diff --git a/uxplay.cpp b/uxplay.cpp
+index 4b558f0..3455628 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -288,6 +288,8 @@ static void log(int level, const char* format, ...) {
+     vprintf(format, vargs);
+     printf("\n");
+     va_end(vargs);
++    /* Lu AirPlay: flush so a parent process reading the pipe sees events immediately */
++    fflush(stdout);
+ }
+ 
+ #define LOGD(...) log(LOGGER_DEBUG, __VA_ARGS__)

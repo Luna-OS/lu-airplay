@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lu AirPlay Receiver
+GenericName=AirPlay-Empfänger
+Comment=iPhone-, iPad- und Mac-Bildschirm per AirPlay auf diesen Computer spiegeln
+Exec=lu-airplay
+Icon=lu-airplay
+Terminal=false
+Categories=AudioVideo;Video;Network;
+StartupWMClass=Lu-airplay

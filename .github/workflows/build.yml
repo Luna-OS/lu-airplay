@@ -1,0 +1,166 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux (Engine + Tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Abhängigkeiten installieren
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config libssl-dev \
+            libplist-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+
+      - name: Engine bauen
+        run: scripts/build-engine.sh
+
+      - name: Unit-Tests
+        working-directory: launcher
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Engine-Starttest
+        run: |
+          timeout -s INT 5 build/engine/uxplay -n "Lu CI" -nh -vs fakesink -as fakesink > engine.log 2>&1 || true
+          cat engine.log
+          grep -q "Initialized server socket" engine.log
+
+  windows:
+    name: Windows (Installer + ZIP)
+    runs-on: windows-latest
+    steps:
+      - name: Zeilenenden nicht umwandeln (Shell-Skripte und Patches brauchen LF)
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+
+      - name: MSYS2-Pakete installieren (mit Wiederholung bei langsamen Mirrors)
+        shell: msys2 {0}
+        run: |
+          pkgs="git"
+          for p in gcc cmake ninja pkgconf ntldd openssl libplist gstreamer gst-plugins-base \
+                   gst-plugins-good gst-plugins-bad gst-libav; do
+            pkgs="$pkgs mingw-w64-ucrt-x86_64-$p"
+          done
+          for attempt in 1 2 3; do
+            pacman -Sy --needed --noconfirm --disable-download-timeout $pkgs && exit 0
+            echo "Versuch $attempt fehlgeschlagen, neuer Versuch in 15 s ..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Engine bauen und mit GStreamer bündeln
+        shell: msys2 {0}
+        run: |
+          git config --global --add safe.directory '*'
+          scripts/build-engine.sh
+          scripts/package-windows.sh dist/LuAirPlay
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit-Tests
+        working-directory: launcher
+        run: python -m unittest discover -s tests -v
+
+      - name: Engine-Starttest (ohne MSYS2, nur mit gebündelten DLLs)
+        shell: python
+        run: |
+          import subprocess, sys, time
+          from pathlib import Path
+          sys.path.insert(0, "launcher")
+          from luairplay.engine import engine_environment
+          bundle = Path("dist/LuAirPlay/engine").resolve()
+          plugins = {p.name for p in (bundle / "lib" / "gstreamer-1.0").glob("*.dll")}
+          required = ["libgstcoreelements.dll", "libgstapp.dll", "libgstplayback.dll", "libgsttypefindfunctions.dll",
+                      "libgstautodetect.dll", "libgstvideoconvertscale.dll", "libgstvideoparsersbad.dll",
+                      "libgstlibav.dll", "libgstd3d11.dll", "libgstaudioconvert.dll", "libgstaudioresample.dll",
+                      "libgstvolume.dll", "libgstwasapi.dll"]
+          missing = [r for r in required if r not in plugins]
+          print(len(plugins), "Plugins gebündelt")
+          assert not missing, f"Plugins fehlen: {missing}"
+
+          def run(*args):
+              exe = bundle / "bin" / "uxplay.exe"
+              env = engine_environment(exe)
+              env["PATH"] = str(exe.parent) + ";C:\\Windows\\System32;C:\\Windows"
+              p = subprocess.Popen([str(exe), "-n", "Lu CI", "-nh", *args],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+              time.sleep(8)
+              p.terminate()
+              out = p.communicate()[0].decode("utf-8", "replace")
+              print(out)
+              return out
+
+          out = run("-vs", "fakesink", "-as", "fakesink")
+          assert "Initialized server socket" in out, "Engine ist nicht gestartet"
+          assert "failed to create video pipeline" not in out, "Video-Pipeline fehlerhaft"
+          # Echte Ausgabe: auf CI-Rechnern ohne GPU evtl. nicht möglich, daher nur informativ
+          run("-vs", "d3d11videosink", "-as", "wasapisink")
+
+      - name: Oberfläche bauen (PyInstaller)
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          python -m PyInstaller --noconfirm --windowed --name "Lu AirPlay" `
+            --icon launcher/luairplay/assets/icon.ico `
+            --add-data "launcher/luairplay/assets;luairplay/assets" `
+            --paths launcher --distpath build/pyi --workpath build/pyi-work `
+            launcher/lu-airplay.pyw
+          Copy-Item -Recurse -Force "build/pyi/Lu AirPlay/*" dist/LuAirPlay/
+
+      - name: Version bestimmen
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; else
+            v="$(python -c 'import sys; sys.path.insert(0,"launcher"); import luairplay; print(luairplay.__version__)')"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Installer bauen (Inno Setup)
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+            $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          }
+          iscc /DAppVersion=${{ steps.ver.outputs.version }} /DSourceDir=..\..\dist\LuAirPlay /DOutputDir=..\..\dist packaging\windows\lu-airplay.iss
+
+      - name: Portable ZIP
+        run: Compress-Archive -Path "dist/LuAirPlay" -DestinationPath "dist/LuAirPlay-${{ steps.ver.outputs.version }}-Windows-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LuAirPlay-Windows
+          path: |
+            dist/LuAirPlay-Setup-*.exe
+            dist/LuAirPlay-*-Windows-portable.zip
+
+      - name: Release veröffentlichen
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/LuAirPlay-Setup-*.exe
+            dist/LuAirPlay-*-Windows-portable.zip
