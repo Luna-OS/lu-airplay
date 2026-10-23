@@ -8,7 +8,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from luairplay import engine  # noqa: E402
-from luairplay.engine import OutputParser, build_args  # noqa: E402
+from luairplay.engine import OutputParser, build_args, local_ipv4_addresses  # noqa: E402
 from luairplay.settings import Settings  # noqa: E402
 
 
@@ -47,6 +47,17 @@ class ParserTest(unittest.TestCase):
                          ["error"])
         self.assertEqual(kinds(p.feed("*** ERROR lost connection with client (network problem?)")),
                          ["lost"])
+
+    def test_network_announcement(self):
+        p = OutputParser()
+        ev = p.feed("mDNS: announcing on IPv4 192.168.1.23 (network adapter: WLAN)")
+        self.assertEqual([(e.kind, e.text, e.detail) for e in ev if e.kind != "log"],
+                         [("network", "192.168.1.23", "WLAN")])
+        ev = p.feed("mDNS: announcing on IPv4 10.0.0.5 (default route)")
+        self.assertEqual([(e.kind, e.text, e.detail) for e in ev if e.kind != "log"],
+                         [("network", "10.0.0.5", "")])
+        self.assertEqual(kinds(p.feed("mDNS: announcing on IPv4 0.0.0.0 (no usable network adapter found)")),
+                         ["network", "warning"])
 
     def test_every_line_is_logged(self):
         ev = OutputParser().feed("irgendwas")
@@ -95,6 +106,11 @@ class ArgsTest(unittest.TestCase):
         a = self.args(video=False, fullscreen=True)
         self.assertEqual(a[a.index("-vs") + 1], "0")
         self.assertNotIn("-fs", a)
+
+    def test_local_ipv4_addresses(self):
+        ips = local_ipv4_addresses()
+        self.assertIsInstance(ips, list)
+        self.assertFalse(any(ip.startswith("127.") for ip in ips))
 
     def test_empty_name_falls_back(self):
         a = self.args(name="  ")

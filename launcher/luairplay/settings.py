@@ -52,6 +52,7 @@ class Settings:
     flip: str = ""                  # "" | H | V | I
     videosink: str = ""             # leer = automatisch
     port: int = 0                   # 0 = automatisch
+    network_ip: str = ""            # IPv4, unter der sich der Empfänger ankündigt ("" = automatisch)
     extra_args: str = ""            # zusätzliche Engine-Optionen für Profis
 
     @classmethod

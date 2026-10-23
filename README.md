@@ -71,6 +71,7 @@ Für Musik im Player auf das AirPlay-Symbol tippen.
 
 | Problem | Lösung |
 |---|---|
+| Empfänger taucht nicht auf, obwohl „Bereit“ angezeigt wird | Unten im Fenster steht „Netz: …“. Diese IP muss im selben Netz wie iPhone/Mac liegen (meist `192.168.x.x`). Steht dort eine andere (VPN, virtueller Adapter), unter *Einstellungen → Erweitert → Netzwerk* die richtige IP wählen. VPN testweise trennen. |
 | Empfänger taucht am iPhone nicht auf | Gleiches WLAN? Unter Windows: *Einstellungen → Zugriff → Windows-Firewall freigeben*. Gast-WLANs und manche Router (AP-/Client-Isolation) blockieren AirPlay. |
 | Verbindet, aber schwarzes Bild/Bildfehler | *Einstellungen → Bild → Software-Dekodierung* einschalten oder unter *Erweitert* eine andere Videoausgabe wählen (Windows: `d3d12videosink`). |
 | Ruckeln | Auflösung auf 1080p oder 720p und Bildrate auf 30 senken. LAN-Kabel am PC hilft. |

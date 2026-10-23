@@ -65,6 +65,20 @@ def engine_environment(engine: Path) -> dict:
     return env
 
 
+def local_ipv4_addresses() -> List[str]:
+    """IPv4-Adressen dieses Rechners (für die Auswahl in den Einstellungen)."""
+    import socket
+    found: List[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127.") and ip not in found:
+                found.append(ip)
+    except OSError:
+        pass
+    return found
+
+
 # --------------------------------------------------------------------------- #
 # Kommandozeile
 # --------------------------------------------------------------------------- #
@@ -145,6 +159,7 @@ _RE_ACCEPTED = re.compile(r"Accepted \S+ client on socket (\d+)")
 _RE_REMOVED = re.compile(r"Removing connection for socket (\d+)")
 _RE_CLIENT = re.compile(r"connection request from (.*) \((.*?)\) with deviceID")
 _RE_PIN = re.compile(r'CLIENT MUST NOW ENTER PIN = "(\d+)"')
+_RE_MDNS = re.compile(r"mDNS: announcing on IPv4 (\S+) \((.*)\)")
 
 
 class OutputParser:
@@ -168,6 +183,12 @@ class OutputParser:
         elif m := _RE_CLIENT.search(line):
             self.client = m.group(1).strip()
             events.append(Event("client", self.client, m.group(2)))
+        elif m := _RE_MDNS.search(line):
+            ip, how = m.group(1), m.group(2)
+            events.append(Event("network", ip, how.split(": ", 1)[1] if ": " in how else ""))
+            if ip == "0.0.0.0":
+                events.append(Event("warning", "Kein passender Netzwerkadapter gefunden – unter "
+                                               "Einstellungen → Erweitert die Netzwerk-IP wählen."))
         elif "starting mirroring" in line:
             events.append(Event("mirroring", self.client))
         elif "raop_rtp starting audio" in line:
@@ -217,8 +238,11 @@ class Engine:
         else:
             kwargs["start_new_session"] = True
         self.events.put(Event("log", "> " + subprocess.list2cmdline(args)))
+        env = engine_environment(self.path)
+        if settings.network_ip.strip():
+            env["LU_AIRPLAY_MDNS_IPV4"] = settings.network_ip.strip()
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, env=engine_environment(self.path),
+                                stdin=subprocess.DEVNULL, env=env,
                                 cwd=str(config_dir()), **kwargs)
         self.proc = proc
         threading.Thread(target=self._read, args=(proc,), daemon=True).start()

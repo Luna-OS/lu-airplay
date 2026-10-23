@@ -11,7 +11,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from . import __version__
-from .engine import IS_WINDOWS, RESOLUTIONS, Engine, find_engine
+from .engine import IS_WINDOWS, RESOLUTIONS, Engine, find_engine, local_ipv4_addresses
 from .settings import Settings, config_dir, random_pin
 
 APP_TITLE = "Lu AirPlay Receiver"
@@ -253,10 +253,13 @@ class App:
             parts.append("nur Audio")
         if not engine:
             parts.append("Engine fehlt!")
+        if self.network and running:
+            parts.append("Netz: " + self.network)
         self.footer.configure(text="   ·   ".join(parts))
 
     error_text = ""
     warning = ""
+    network = ""
 
     def _set_state(self, state: str, error: str = "") -> None:
         self.state = state
@@ -294,6 +297,9 @@ class App:
             self.client = ""
             if self.engine.running:
                 self._set_state("ready")
+        elif ev.kind == "network":
+            self.network = ev.text + (f" ({ev.detail})" if ev.detail else "")
+            self._render()
         elif ev.kind == "pin":
             self.settings.pin = ev.text
             self._render()
@@ -314,6 +320,7 @@ class App:
 
     # ------------------------------------------------------------- Aktionen --
     def start(self) -> None:
+        self.network = ""
         self.stopping = False
         self.error_text = ""
         self.warning = ""
@@ -406,6 +413,7 @@ class SettingsDialog:
             "videosink": tk.StringVar(value=s.videosink),
             "port": tk.StringVar(value=str(s.port or "")),
             "extra_args": tk.StringVar(value=s.extra_args),
+            "network_ip": tk.StringVar(value=s.network_ip),
         }
 
         def check(parent, key, text):
@@ -470,6 +478,9 @@ class SettingsDialog:
                      values=(["", "d3d11videosink", "d3d12videosink", "glimagesink"] if IS_WINDOWS else
                              ["", "autovideosink", "xvimagesink", "glimagesink", "waylandsink",
                               "osxvideosink"])).pack(anchor="w")
+        labeled(expert, "Netzwerk (IP-Adresse im WLAN des iPhones; leer = automatisch)")
+        ttk.Combobox(expert, textvariable=self.v["network_ip"], width=28,
+                     values=[""] + local_ipv4_addresses()).pack(anchor="w")
         labeled(expert, "Netzwerk-Port (leer = automatisch, sonst z. B. 7100)")
         ttk.Entry(expert, textvariable=self.v["port"], width=12).pack(anchor="w")
         labeled(expert, "Zusätzliche Engine-Optionen (UxPlay-Syntax)")
@@ -537,6 +548,7 @@ class SettingsDialog:
         s.videosink = v["videosink"].get().strip()
         s.port = int(port_txt) if port_txt else 0
         s.extra_args = v["extra_args"].get().strip()
+        s.network_ip = v["network_ip"].get().strip()
         s.save()
         self.top.destroy()
         self.app.restart_if_running()

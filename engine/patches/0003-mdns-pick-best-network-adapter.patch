@@ -1,0 +1,148 @@
+diff --git a/lib/mdnsd/mdnsd.c b/lib/mdnsd/mdnsd.c
+index 97a1ba6..e729cc9 100644
+--- a/lib/mdnsd/mdnsd.c
++++ b/lib/mdnsd/mdnsd.c
+@@ -345,13 +345,61 @@ static int mdns_query_type_matches(uint16_t query_type, uint16_t record_type)
+     return query_type == record_type || query_type == DNS_TYPE_ANY;
+ }
+ 
++/* Lu AirPlay: report which address is announced, so users (and the Lu AirPlay
++ * app) can see on which network the receiver is visible */
++static void mdns_log_ipv4(uint32_t addr, const char *how, const char *ifname)
++{
++    char buf[INET_ADDRSTRLEN] = "0.0.0.0";
++    inet_ntop(AF_INET, &addr, buf, sizeof(buf));
++    printf("mDNS: announcing on IPv4 %s (%s%s%s)\n", buf, how,
++           (ifname && *ifname) ? ": " : "", (ifname && *ifname) ? ifname : "");
++    fflush(stdout);
++}
++
++#ifdef _WIN32
++/* adapters that are (almost) never the LAN the iPhone/Mac is on */
++static int mdns_is_virtual_adapter(const wchar_t *text)
++{
++    static const wchar_t *patterns[] = {
++        L"hyper-v", L"virtual", L"vethernet", L"wsl", L"vmware", L"virtualbox", L"tap-",
++        L"tap adapter", L"tailscale", L"wireguard", L"wintun", L"zerotier", L"hamachi",
++        L"radmin", L"openvpn", L"nordlynx", L"vpn", L"npcap", L"loopback", L"bluetooth", NULL
++    };
++    wchar_t lower[256];
++    size_t i;
++    if (!text) {
++        return 0;
++    }
++    for (i = 0; i < 255 && text[i]; i++) {
++        lower[i] = (text[i] >= L'A' && text[i] <= L'Z') ? text[i] + (L'a' - L'A') : text[i];
++    }
++    lower[i] = 0;
++    for (i = 0; patterns[i]; i++) {
++        if (wcsstr(lower, patterns[i])) {
++            return 1;
++        }
++    }
++    return 0;
++}
++#endif
++
+ static uint32_t mdns_get_default_ipv4(void)
+ {
+     uint32_t addr = 0;
++    const char *forced = getenv("LU_AIRPLAY_MDNS_IPV4");
++
++    if (forced && *forced) {
++        struct in_addr in;
++        if (inet_pton(AF_INET, forced, &in) == 1) {
++            mdns_log_ipv4(in.s_addr, "selected in settings", NULL);
++            return in.s_addr;
++        }
++    }
+ #ifdef _WIN32
+     ULONG buflen = 15000;
+     PIP_ADAPTER_ADDRESSES pAddresses = NULL;
+     DWORD dwRetVal = 0;
++    char best_name[256] = "";
+ 
+     pAddresses = (IP_ADAPTER_ADDRESSES *) malloc(buflen);
+     if (!pAddresses) {
+@@ -368,28 +416,44 @@ static uint32_t mdns_get_default_ipv4(void)
+     }
+     
+     if (dwRetVal == NO_ERROR) {
+-        PIP_ADAPTER_ADDRESSES pCurr = pAddresses;
+-        while (pCurr) {
+-            // Precise target filters to bypass the Hyper-V virtual adapter loopback capture
+-            if (pCurr->OperStatus == IfOperStatusUp && 
+-                pCurr->IfType != IF_TYPE_SOFTWARE_LOOPBACK &&
+-                pCurr->FirstGatewayAddress != NULL && 
+-                wcsstr(pCurr->Description, L"Hyper-V") == NULL &&
+-                wcsstr(pCurr->Description, L"Virtual") == NULL &&
+-                wcsstr(pCurr->Description, L"WSL") == NULL &&
+-                wcsstr(pCurr->Description, L"vEthernet") == NULL) {
+-                
+-                if (pCurr->FirstUnicastAddress != NULL) {
+-                    struct sockaddr_in *sockaddr_ipv4 = (struct sockaddr_in *)pCurr->FirstUnicastAddress->Address.lpSockaddr;
+-                    addr = sockaddr_ipv4->sin_addr.s_addr;
+-                    break; 
++        /* Lu AirPlay: pick the best adapter instead of the first one: physical
++         * Wi-Fi/Ethernet with a gateway and the lowest route metric wins */
++        unsigned long long best_score = ~0ULL;
++        PIP_ADAPTER_ADDRESSES pCurr;
++        for (pCurr = pAddresses; pCurr; pCurr = pCurr->Next) {
++            unsigned long long score;
++            if (pCurr->OperStatus != IfOperStatusUp ||
++                pCurr->IfType == IF_TYPE_SOFTWARE_LOOPBACK ||
++                pCurr->IfType == IF_TYPE_TUNNEL ||
++                pCurr->FirstUnicastAddress == NULL ||
++                mdns_is_virtual_adapter(pCurr->Description) ||
++                mdns_is_virtual_adapter(pCurr->FriendlyName)) {
++                continue;
++            }
++            score = pCurr->Ipv4Metric;
++            if (pCurr->FirstGatewayAddress == NULL) {
++                score += 1000000;
++            }
++            if (pCurr->IfType != IF_TYPE_IEEE80211 && pCurr->IfType != IF_TYPE_ETHERNET_CSMACD) {
++                score += 10000;
++            }
++            if (score < best_score) {
++                struct sockaddr_in *sockaddr_ipv4 = (struct sockaddr_in *)pCurr->FirstUnicastAddress->Address.lpSockaddr;
++                best_score = score;
++                addr = sockaddr_ipv4->sin_addr.s_addr;
++                if (!WideCharToMultiByte(CP_UTF8, 0, pCurr->FriendlyName, -1, best_name, sizeof(best_name), NULL, NULL)) {
++                    best_name[0] = 0;
+                 }
+             }
+-            pCurr = pCurr->Next;
+         }
+     }
+     free(pAddresses);
+-#else    
++    if (addr) {
++        mdns_log_ipv4(addr, "network adapter", best_name);
++        return addr;
++    }
++#endif
++    /* interface the routing table would use for mDNS multicast */
+     int fd;
+     struct sockaddr_in remote;
+     struct sockaddr_in local;
+@@ -397,6 +461,7 @@ static uint32_t mdns_get_default_ipv4(void)
+ 
+     fd = socket(AF_INET, SOCK_DGRAM, 0);
+     if (fd == -1) {
++        mdns_log_ipv4(0, "no usable network adapter found", NULL);
+         return 0;
+     }
+ 
+@@ -411,10 +476,7 @@ static uint32_t mdns_get_default_ipv4(void)
+     }
+ 
+     CLOSESOCKET(fd);
+-#endif
+-    //printf("local ipv4 address %d.%d.%d.%d\n",  (addr & 0xff), ((addr >> 8) & 0xff),
+-    //       ((addr >> 16) & 0xff),((addr >> 24) & 0xff));
+-    
++    mdns_log_ipv4(addr, addr ? "default route" : "no usable network adapter found", NULL);
+     return addr;
+ }
+ 
