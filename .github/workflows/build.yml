@@ -75,7 +75,7 @@ jobs:
           # einzeln laden statt parallel, damit die Mirrors nicht mit 429 antworten
           sed -i 's/^#\?ParallelDownloads.*/ParallelDownloads = 1/' /etc/pacman.conf
           pkgs="git"
-          for p in gcc cmake ninja pkgconf ntldd openssl libplist gstreamer gst-plugins-base \
+          for p in gcc gdb cmake ninja pkgconf ntldd openssl libplist gstreamer gst-plugins-base \
                    gst-plugins-good gst-plugins-bad gst-libav; do
             pkgs="$pkgs mingw-w64-ucrt-x86_64-$p"
           done
@@ -130,12 +130,17 @@ jobs:
               exe = bundle / "bin" / "uxplay.exe"
               env = engine_environment(exe)
               env["PATH"] = str(exe.parent) + ";C:\\Windows\\System32;C:\\Windows"
-              p = subprocess.Popen([str(exe), "-n", "Lu CI", "-nh", *args],
+              # -d: Debug-Ausgabe wird zeilenweise geflusht, zeigt also auch bei einem Absturz,
+              # wie weit die Engine kam
+              p = subprocess.Popen([str(exe), "-n", "Lu CI", "-nh", "-d", *args],
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
               time.sleep(8)
-              p.terminate()
+              rc = p.poll()
+              if rc is None:
+                  p.terminate()
               out = p.communicate()[0].decode("utf-8", "replace")
               print(out)
+              print("--- Engine:", "lief (beendet durch Test)" if rc is None else f"abgestürzt/beendet, Code {rc & 0xFFFFFFFF:#010x}")
               return out
 
           out = run("-vs", "fakesink", "-as", "fakesink")
@@ -152,6 +157,17 @@ jobs:
               out = run(*args)
               assert "Initialized server socket" in out, f"Engine mit App-Argumenten nicht gestartet (Start {i})"
               assert ("new Public Key" in out) == (i == 1), f"Schlüsseldatei falsch behandelt (Start {i})"
+
+      - name: Absturzanalyse mit gdb (nur wenn der Starttest fehlschlägt)
+        if: failure()
+        shell: msys2 {0}
+        run: |
+          for i in 1 2 3; do
+            echo "===== gdb-Lauf $i ====="
+            timeout 25 gdb -q -batch -ex "set pagination off" -ex run -ex "info registers rip" \
+              -ex "thread apply all bt 25" \
+              --args build/engine/uxplay.exe -n "Lu CI" -nh -d -vs fakesink -as fakesink || true
+          done
 
       - name: Oberfläche bauen (PyInstaller)
         run: |
