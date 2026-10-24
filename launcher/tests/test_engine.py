@@ -8,7 +8,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from luairplay import engine  # noqa: E402
-from luairplay.engine import OutputParser, build_args, local_ipv4_addresses  # noqa: E402
+from luairplay.engine import (OutputParser, build_args, effective_rotation,  # noqa: E402
+                             local_ipv4_addresses, video_sink_args)
 from luairplay.settings import Settings  # noqa: E402
 
 
@@ -59,6 +60,24 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(kinds(p.feed("mDNS: announcing on IPv4 0.0.0.0 (no usable network adapter found)")),
                          ["network", "warning"])
 
+    def test_disconnect_after_normal_teardown(self):
+        """Nach normalem Beenden meldet die Engine nur 'Connection closed on socket'."""
+        p = OutputParser()
+        p.feed("Accepted IPv4 client on socket 7, port 7000")
+        p.feed("connection request from Lunas iPhone (iPhone16,1) with deviceID = X")
+        ev = p.feed("Connection closed on socket 7")
+        self.assertEqual([(e.kind, e.text) for e in ev if e.kind != "log"],
+                         [("disconnected", "Lunas iPhone")])
+
+    def test_video_geometry_and_end(self):
+        p = OutputParser()
+        ev = p.feed("*** codec is h264: geometry is (w,h)=(1920,1080) (source); (x,y)=(0,0); "
+                    "(w,h)=(886,1920)")
+        self.assertEqual([(e.kind, e.text) for e in ev if e.kind != "log"], [("video_size", "886x1920")])
+        ev = p.feed("*** codec is h265: geometry is (w,h)=(1280,720) (source); (x,y)=(0,0); (w,h)=(0,0)")
+        self.assertEqual([(e.kind, e.text) for e in ev if e.kind != "log"], [("video_size", "1280x720")])
+        self.assertEqual(kinds(p.feed("GStreamer: End-Of-Stream (video)")), ["mirror_end"])
+
     def test_every_line_is_logged(self):
         ev = OutputParser().feed("irgendwas")
         self.assertEqual([(e.kind, e.text) for e in ev], [("log", "irgendwas")])
@@ -89,6 +108,29 @@ class ArgsTest(unittest.TestCase):
         self.assertTrue((Path(self.tmp.name) / "engine.rc").exists())
 
     def test_options(self):
+        with mock.patch.object(engine, "IS_WINDOWS", False):
+            self._test_options()
+
+    def test_windows_fullscreen_and_user_sink(self):
+        with mock.patch.object(engine, "IS_WINDOWS", True):
+            a = self.args(fullscreen=True)
+            self.assertNotIn("-fs", a)
+            self.assertIn("fullscreen=true", a[a.index("-vs") + 1])
+            # eigenes -vs in den Zusatzoptionen: keine d3d11-Optionen, die daran kleben bleiben
+            a = self.args(fullscreen=True, extra_args="-vs d3d12videosink")
+            self.assertEqual(a.count("-vs"), 1)
+            self.assertIn("-fs", a)
+            self.assertEqual(a[a.index("-vs") + 1], "d3d12videosink")
+
+    def test_effective_rotation(self):
+        """Das Videofenster muss wissen, ob die Engine Breite und Höhe tauscht."""
+        self.assertEqual(effective_rotation(Settings()), "")
+        self.assertEqual(effective_rotation(Settings(rotation="L")), "L")
+        self.assertEqual(effective_rotation(Settings(extra_args="-r R")), "R")
+        self.assertEqual(effective_rotation(Settings(rotation="L", extra_args="-vsync no -r R")), "R")
+        self.assertEqual(effective_rotation(Settings(extra_args="-f I")), "")
+
+    def _test_options(self):
         a = self.args(resolution="4K", fps=30, pin_enabled=True, fullscreen=True, audio=False,
                       takeover=False, port=7100, rotation="R", extra_args="-vsync no")
         self.assertEqual(a[a.index("-s") + 1], "3840x2160@30")
@@ -111,6 +153,22 @@ class ArgsTest(unittest.TestCase):
         ips = local_ipv4_addresses()
         self.assertIsInstance(ips, list)
         self.assertFalse(any(ip.startswith("127.") for ip in ips))
+
+    def test_fullscreen_keeps_alt_enter_on_windows(self):
+        """Mit -fs schaltet UxPlay Alt+Enter bei d3d11/d3d12 ab – deshalb Sink-Optionen."""
+        a = video_sink_args("", True, windows=True)
+        self.assertEqual(a[0], "-vs")
+        self.assertTrue(a[1].startswith("d3d11videosink "))
+        self.assertIn("ALT_ENTER", a[1])
+        self.assertIn("fullscreen=true", a[1])
+        self.assertNotIn("-fs", a)
+        a = video_sink_args("d3d12videosink", True, windows=True)
+        self.assertIn("fullscreen-on-alt-enter=true", a[1])
+        self.assertNotIn("-fs", a)
+        self.assertEqual(video_sink_args("glimagesink", True, windows=True), ["-vs", "glimagesink", "-fs"])
+        self.assertEqual(video_sink_args("", False, windows=True), ["-vs", "d3d11videosink"])
+        self.assertEqual(video_sink_args("", True, windows=False), ["-fs"])
+        self.assertEqual(video_sink_args("", False, windows=False), [])
 
     def test_empty_name_falls_back(self):
         a = self.args(name="  ")

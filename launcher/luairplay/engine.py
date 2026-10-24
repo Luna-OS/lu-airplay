@@ -91,6 +91,39 @@ RESOLUTIONS = {
 }
 
 
+# Mit -fs schaltet UxPlay bei d3d11/d3d12 Alt+Enter ab (nur fullscreen=TRUE) – man käme nicht
+# mehr aus dem Vollbild heraus. Deshalb Vollbild über Sink-Optionen setzen und Alt+Enter erlauben.
+_D3D11_FULLSCREEN = ("d3d11videosink fullscreen-toggle-mode="
+                     "GST_D3D11_WINDOW_FULLSCREEN_TOGGLE_MODE_ALT_ENTER+"
+                     "GST_D3D11_WINDOW_FULLSCREEN_TOGGLE_MODE_PROPERTY fullscreen=true")
+_D3D12_FULLSCREEN = "d3d12videosink fullscreen-on-alt-enter=true fullscreen=true"
+
+
+def video_sink_args(videosink: str, fullscreen: bool, windows: bool) -> List[str]:
+    sink = videosink.strip()
+    if windows:
+        sink = sink or "d3d11videosink"
+        if fullscreen and sink == "d3d11videosink":
+            return ["-vs", _D3D11_FULLSCREEN]
+        if fullscreen and sink == "d3d12videosink":
+            return ["-vs", _D3D12_FULLSCREEN]
+    args = ["-vs", sink] if sink else []
+    if fullscreen:
+        args.append("-fs")
+    return args
+
+
+def effective_rotation(s: Settings) -> str:
+    """Drehung, mit der die Engine tatsächlich läuft ("R", "L" oder ""): wie bei UxPlay gewinnt
+    das letzte "-r", also eins aus den zusätzlichen Optionen vor der Einstellung."""
+    rotation = s.rotation if s.rotation in ("R", "L") else ""
+    tokens = s.extra_args.split()
+    for opt, value in zip(tokens, tokens[1:]):
+        if opt == "-r" and value in ("R", "L"):
+            rotation = value
+    return rotation
+
+
 def build_args(s: Settings, engine: Path) -> List[str]:
     cfg = config_dir()
     rc_file = cfg / "engine.rc"
@@ -111,12 +144,10 @@ def build_args(s: Settings, engine: Path) -> List[str]:
     if not s.video:
         args += ["-vs", "0"]
     else:
-        if IS_WINDOWS:
-            args += ["-vs", s.videosink or "d3d11videosink"]
-        elif s.videosink:
-            args += ["-vs", s.videosink]
-        if s.fullscreen:
-            args.append("-fs")
+        # eigenes "-vs" in den zusätzlichen Optionen hat Vorrang (dann keine d3d11-Optionen,
+        # die UxPlay sonst an den anderen Sink hängen würde)
+        user_sink = "-vs" in s.extra_args.split()
+        args += video_sink_args(s.videosink, s.fullscreen, IS_WINDOWS and not user_sink)
         if s.software_decoding:
             args.append("-avdec")
         if s.keep_window:
@@ -150,16 +181,19 @@ def build_args(s: Settings, engine: Path) -> List[str]:
 
 @dataclass
 class Event:
-    kind: str  # ready | client | mirroring | audio | disconnected | lost | pin | warning | error | log | exited
+    kind: str  # ready | client | mirroring | mirror_end | video_size | audio | disconnected | lost |
+    #            network | pin | warning | error | log | exited
     text: str = ""
     detail: str = ""
 
 
 _RE_ACCEPTED = re.compile(r"Accepted \S+ client on socket (\d+)")
-_RE_REMOVED = re.compile(r"Removing connection for socket (\d+)")
+_RE_REMOVED = re.compile(r"(?:Removing connection for|Connection closed on) socket (\d+)")
 _RE_CLIENT = re.compile(r"connection request from (.*) \((.*?)\) with deviceID")
 _RE_PIN = re.compile(r'CLIENT MUST NOW ENTER PIN = "(\d+)"')
 _RE_MDNS = re.compile(r"mDNS: announcing on IPv4 (\S+) \((.*)\)")
+_RE_GEOMETRY = re.compile(r"codec is \S+: geometry is \(w,h\)=\((\d+),(\d+)\) \(source\); "
+                          r"\(x,y\)=\((-?\d+),(-?\d+)\); \(w,h\)=\((\d+),(\d+)\)")
 
 
 class OutputParser:
@@ -189,6 +223,14 @@ class OutputParser:
             if ip == "0.0.0.0":
                 events.append(Event("warning", "Kein passender Netzwerkadapter gefunden – unter "
                                                "Einstellungen → Erweitert die Netzwerk-IP wählen."))
+        elif m := _RE_GEOMETRY.search(line):
+            # sichtbarer Bildausschnitt; Quellgröße als Notbehelf
+            w, h = int(m.group(5)), int(m.group(6))
+            if w <= 0 or h <= 0:
+                w, h = int(m.group(1)), int(m.group(2))
+            events.append(Event("video_size", f"{w}x{h}"))
+        elif "GStreamer: End-Of-Stream (video)" in line:
+            events.append(Event("mirror_end", self.client))
         elif "starting mirroring" in line:
             events.append(Event("mirroring", self.client))
         elif "raop_rtp starting audio" in line:

@@ -109,6 +109,15 @@ def pick_work_area(saved: Optional[Rect], work_areas: List[Rect], fallback: Rect
     return saved, best
 
 
+def fits_inside(r: Rect, work: Rect, frame: Frame = (0, 0, 0, 0)) -> bool:
+    """Liegt r (GetWindowRect) sichtbar im Arbeitsbereich? Unter Windows 10/11 zählen die
+    unsichtbaren Greifränder links/rechts/unten mit; ein angedocktes (Win+Pfeil) oder bündig an
+    Bildschirmrand/Taskleiste geschobenes Fenster ragt deshalb um diese Ränder hinaus."""
+    left, _, right, bottom = frame
+    return (work.left <= r.left + left and work.top <= r.top
+            and r.right - right <= work.right and r.bottom - bottom <= work.bottom)
+
+
 def rect_from_list(value) -> Optional[Rect]:
     if isinstance(value, (list, tuple)) and len(value) == 4 and all(isinstance(v, int) for v in value):
         r = Rect(*value)
@@ -233,15 +242,57 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
         EnumWindows(WNDENUMPROC(cb), 0)
         return found
 
+    SendMessageTimeoutW = _sig("SendMessageTimeoutW", LONG_PTR, wintypes.HWND, wintypes.UINT,
+                               wintypes.WPARAM, wintypes.LPARAM, wintypes.UINT, wintypes.UINT,
+                               ctypes.POINTER(ctypes.c_size_t))
+    WM_SETTEXT = 0x000C
+    SMTO_ABORTIFHUNG = 0x0002
+    SWP_ASYNCWINDOWPOS = 0x4000
+
+    def _send(hwnd, msg, wparam, lparam) -> None:
+        """Nachricht an das Fenster der Engine, ohne die Oberfläche zu blockieren, falls deren
+        Fenster-Thread gerade beschäftigt ist."""
+        result = ctypes.c_size_t()
+        SendMessageTimeoutW(hwnd, msg, wparam, lparam, SMTO_ABORTIFHUNG, 250, ctypes.byref(result))
+
+    class _WinState:
+        __slots__ = ("seen", "fitted", "away", "rect", "target", "settle", "content")
+
+        def __init__(self) -> None:
+            self.seen = 0          # Anzahl Abfragen seit dem Erscheinen
+            self.fitted = False    # jemals eingepasst?
+            self.away = False      # gerade (oder zuletzt) minimiert/maximiert/Vollbild
+            self.rect = None       # zuletzt bekanntes Rechteck (Basis für "vom Nutzer bewegt")
+            self.target = None     # Rechteck der eigenen, evtl. noch ausstehenden Positionierung
+            self.settle = 0        # Abfragen, in denen die eigene Positionierung ankommen darf
+            self.content = None    # Bildgröße, mit der das Fenster eingepasst wurde
+
     class VideoWindowManager:
-        """Wird regelmäßig (z. B. alle 300 ms) aus der Tk-Hauptschleife aufgerufen."""
+        """Wird regelmäßig (alle ~300 ms) aus der Tk-Hauptschleife aufgerufen.
+
+        GStreamer verschiebt/skaliert sein Fenster nach dem ersten Anzeigen nie wieder (auch nicht
+        bei Drehung des iPhones); jede Sitzung bekommt aber ein neues Fenster. Vollbild (Alt+Enter)
+        heißt: Rahmen weg + maximiert. Minimierte, maximierte und Vollbild-Fenster bleiben
+        unangetastet. Kehrt ein Fenster in den Normalzustand zurück, bleibt die von Windows bzw.
+        GStreamer wiederhergestellte Position erhalten – eingepasst wird nur ein Fenster, das noch
+        nie eingepasst war (z. B. im Vollbild gestartet) oder das nicht auf seinen Monitor passt.
+        """
+
+        GRACE = 2              # Abfragen warten, bis ein neues Fenster fertig angezeigt ist
+        GRACE_FULLSCREEN = 6   # ... länger, wenn GStreamer gleich in den Vollbildmodus wechselt
+        SETTLE = 6
 
         def __init__(self, icon_path: Optional[str] = None,
                      on_saved: Optional[Callable[[List[int]], None]] = None) -> None:
-            self.known: Dict[int, Rect] = {}   # hwnd -> zuletzt gesehenes Fensterrechteck
+            self.windows: Dict[int, _WinState] = {}
             self.icon_path = icon_path
             self.on_saved = on_saved
             self._icons = None
+            self._topmost = False
+
+        @property
+        def known(self) -> Dict[int, "_WinState"]:
+            return self.windows
 
         def _load_icons(self):
             if self._icons is None and self.icon_path:
@@ -251,64 +302,130 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
             return self._icons
 
         def poll(self, pid: Optional[int], title: str, scale_percent: int, always_on_top: bool,
-                 saved: Optional[List[int]], fullscreen: bool) -> None:
+                 saved: Optional[List[int]], fullscreen: bool,
+                 video_size: Optional[Tuple[int, int]] = None) -> bool:
+            """video_size gilt für das nächste neue Fenster. Rückgabe True, sobald ein Fenster damit
+            eingepasst wurde – dann gehört die Größe zu diesem Fenster und ist für spätere Fenster
+            derselben Verbindung (z. B. ein YouTube-Video nach dem Spiegeln) veraltet."""
+            self._topmost = always_on_top
+            used = False
             if not pid:
-                self.known.clear()
-                return
+                self.windows.clear()
+                return used
             current = top_level_windows_of(pid)
-            for hwnd in list(self.known):
+            for hwnd in list(self.windows):
                 if hwnd not in current or not IsWindow(hwnd):
-                    del self.known[hwnd]
+                    del self.windows[hwnd]
             for hwnd in current:
-                if hwnd in self.known:
-                    self._track(hwnd)
+                st = self.windows.setdefault(hwnd, _WinState())
+                st.seen += 1
+                if st.seen == 1:
+                    self._decorate(hwnd, title)
+                if st.seen < (self.GRACE_FULLSCREEN if fullscreen else self.GRACE):
+                    continue
+                if self._is_fullscreen_or_maximized(hwnd):
+                    st.away = True
+                    st.settle = 0
+                    continue
+                if not st.fitted:
+                    used |= self._fit(hwnd, st, scale_percent, rect_from_list(saved), video_size)
+                elif st.away:
+                    st.away = False
+                    self._returned(hwnd, st, scale_percent, saved)
                 else:
-                    self._adopt(hwnd, title, scale_percent, always_on_top, rect_from_list(saved),
-                                fullscreen)
+                    self._track(hwnd, st)
+            return used
 
-        def _adopt(self, hwnd, title, scale_percent, always_on_top, saved, fullscreen) -> None:
-            SetWindowTextW(hwnd, title)
-            icons = self._load_icons()
+        def retitle(self, title: str) -> None:
+            for hwnd in self.windows:
+                self._decorate(hwnd, title, icon=False)
+
+        def _decorate(self, hwnd, title: str, icon: bool = True) -> None:
+            buf = ctypes.create_unicode_buffer(title)
+            _send(hwnd, WM_SETTEXT, 0, ctypes.cast(buf, ctypes.c_void_p).value)
+            icons = self._load_icons() if icon else None
             if icons:
-                SendMessageW(hwnd, WM_SETICON, ICON_BIG, icons[0] or 0)
-                SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icons[1] or 0)
-            if fullscreen:
-                # Vollbild-Wunsch respektieren; Alt+Enter wechselt in den Fenstermodus
-                self.known[hwnd] = Rect(0, 0, 0, 0)
-                return
+                _send(hwnd, WM_SETICON, ICON_BIG, icons[0] or 0)
+                _send(hwnd, WM_SETICON, ICON_SMALL, icons[1] or 0)
+
+        @staticmethod
+        def _is_fullscreen_or_maximized(hwnd) -> bool:
+            if IsIconic(hwnd) or IsZoomed(hwnd):
+                return True
+            style = GetWindowLong(hwnd, GWL_STYLE)
+            return not (style & WS_CAPTION)
+
+        def _fit(self, hwnd, st: "_WinState", scale_percent: int, saved: Optional[Rect],
+                 video_size: Optional[Tuple[int, int]]) -> bool:
             style = GetWindowLong(hwnd, GWL_STYLE)
             exstyle = GetWindowLong(hwnd, GWL_EXSTYLE)
-            new_style = (style | WS_OVERLAPPEDWINDOW) & ~WS_POPUP
-            if new_style != style:
-                SetWindowLong(hwnd, GWL_STYLE, new_style)
-            client = _RECT()
-            GetClientRect(hwnd, ctypes.byref(client))
-            cw, ch = client.right - client.left, client.bottom - client.top
+            used = bool(video_size and video_size[0] > 0 and video_size[1] > 0)
+            if used:
+                cw, ch = video_size
+            else:
+                # Notbehelf: Windows hat das zu große Fenster evtl. schon gekappt
+                client = _RECT()
+                GetClientRect(hwnd, ctypes.byref(client))
+                cw, ch = client.right - client.left, client.bottom - client.top
             saved, work = pick_work_area(saved, _all_work_areas(), _work_area_of(hwnd))
-            target = plan_window(cw, ch, work, _frame_for(new_style, exstyle), scale_percent, saved)
-            after = HWND_TOPMOST if always_on_top else HWND_NOTOPMOST
+            target = plan_window(cw, ch, work, _frame_for(style, exstyle), scale_percent, saved)
+            after = HWND_TOPMOST if self._topmost else HWND_NOTOPMOST
             SetWindowPos(hwnd, after, target.left, target.top, target.width, target.height,
-                         SWP_FRAMECHANGED | SWP_SHOWWINDOW)
-            SetForegroundWindow(hwnd)
-            self.known[hwnd] = target
+                         SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
+            st.fitted, st.target, st.settle = True, target, self.SETTLE
+            st.content = (cw, ch)
+            return used
 
-        def _track(self, hwnd) -> None:
-            """Verschiebt/zieht der Nutzer das Fenster, Position merken."""
-            if self.known[hwnd] == Rect(0, 0, 0, 0) or IsIconic(hwnd) or IsZoomed(hwnd):
+        def _returned(self, hwnd, st: "_WinState", scale_percent: int, saved) -> None:
+            """Zurück aus minimiert/maximiert/Vollbild: Wiederhergestelltes behalten."""
+            now = self._rect_of(hwnd)
+            if now is None:
                 return
+            frame = _frame_for(GetWindowLong(hwnd, GWL_STYLE), GetWindowLong(hwnd, GWL_EXSTYLE))
+            if not fits_inside(now, _work_area_of(hwnd), frame):
+                self._fit(hwnd, st, scale_percent, rect_from_list(saved), st.content)
+                return
+            if st.rect is not None and now != st.rect:
+                self._report(st, now)      # z. B. maximiert auf anderen Monitor geschoben
+            st.rect = now
+
+        @staticmethod
+        def _rect_of(hwnd) -> Optional[Rect]:
             r = _RECT()
             if not GetWindowRect(hwnd, ctypes.byref(r)):
+                return None
+            return _rect(r)
+
+        def _report(self, st: "_WinState", now: Rect) -> None:
+            st.rect = now
+            if self.on_saved and now.width > 0 and now.height > 0:
+                self.on_saved(list(now))
+
+        def _track(self, hwnd, st: "_WinState") -> None:
+            """Verschiebt/zieht der Nutzer das Fenster, Position merken."""
+            now = self._rect_of(hwnd)
+            if now is None:
                 return
-            now = _rect(r)
-            if now != self.known[hwnd] and now.width > 0 and now.height > 0:
-                self.known[hwnd] = now
-                if self.on_saved:
-                    self.on_saved(list(now))
+            if st.settle:
+                # eigene (asynchrone) Positionierung ist evtl. noch unterwegs
+                if now == st.target:
+                    st.settle, st.rect = 0, now
+                    return
+                st.settle -= 1
+                if st.settle:
+                    return
+                # kam nie exakt an (Rundung) oder der Nutzer hat inzwischen verschoben:
+                # aktuelle Lage als vom Nutzer gewählt übernehmen
+                self._report(st, now)
+                return
+            if now != st.rect:
+                self._report(st, now)
 
         def set_topmost(self, on: bool) -> None:
-            for hwnd in self.known:
+            self._topmost = on
+            for hwnd in self.windows:
                 SetWindowPos(hwnd, HWND_TOPMOST if on else HWND_NOTOPMOST, 0, 0, 0, 0,
-                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
 
 else:
     class VideoWindowManager:  # type: ignore[no-redef]
@@ -317,8 +434,11 @@ else:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def poll(self, *args, **kwargs) -> None:
-            pass
+        def poll(self, *args, **kwargs) -> bool:
+            return False
 
         def set_topmost(self, on: bool) -> None:
+            pass
+
+        def retitle(self, title: str) -> None:
             pass
