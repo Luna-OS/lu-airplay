@@ -75,6 +75,7 @@ class App:
         self._moved_rect = None
         self._moved_ticks = 0
         self._video_watch_failed = False
+        self.video_size = None       # (Breite, Höhe) des gespiegelten Bildes laut Engine
         self.root.after(100, self._poll)
         if IS_WINDOWS:
             self.root.after(300, self._watch_video)
@@ -295,7 +296,7 @@ class App:
             title = f"Lu AirPlay – {self.client}" if self.client else f"Lu AirPlay – {self.settings.name}"
             s = self.settings
             self.video_windows.poll(pid, title, s.window_size, s.always_on_top, s.video_window,
-                                    s.fullscreen)
+                                    s.fullscreen, self.video_size)
         except Exception as e:  # nie die Oberfläche lahmlegen
             if not self._video_watch_failed:
                 self._video_watch_failed = True
@@ -324,17 +325,32 @@ class App:
             return
         if ev.kind == "ready":
             self.client = ""
+            self.video_size = None
             self._set_state("ready")
         elif ev.kind == "client":
             self.client = ev.text
+            self.video_windows.retitle(f"Lu AirPlay – {self.client}")
             self._set_state("connected")
         elif ev.kind == "mirroring":
             self._set_state("mirroring")
+        elif ev.kind == "video_size":
+            try:
+                w, h = (int(v) for v in ev.text.split("x"))
+            except ValueError:
+                return
+            if self.settings.rotation in ("R", "L"):
+                w, h = h, w
+            self.video_size = (w, h)
+        elif ev.kind == "mirror_end":
+            self.video_size = None
+            if self.engine.running:
+                self._set_state("connected" if self.client else "ready")
         elif ev.kind == "audio":
             if self.state != "mirroring":
                 self._set_state("audio")
         elif ev.kind in ("disconnected", "lost"):
             self.client = ""
+            self.video_size = None
             if self.engine.running:
                 self._set_state("ready")
         elif ev.kind == "network":
