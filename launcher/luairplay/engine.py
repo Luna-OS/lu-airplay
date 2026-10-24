@@ -133,7 +133,10 @@ def build_args(s: Settings, engine: Path) -> List[str]:
     if not s.video:
         args += ["-vs", "0"]
     else:
-        args += video_sink_args(s.videosink, s.fullscreen, IS_WINDOWS)
+        # eigenes "-vs" in den zusätzlichen Optionen hat Vorrang (dann keine d3d11-Optionen,
+        # die UxPlay sonst an den anderen Sink hängen würde)
+        user_sink = "-vs" in s.extra_args.split()
+        args += video_sink_args(s.videosink, s.fullscreen, IS_WINDOWS and not user_sink)
         if s.software_decoding:
             args.append("-avdec")
         if s.keep_window:

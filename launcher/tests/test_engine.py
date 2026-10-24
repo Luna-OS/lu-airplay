@@ -107,6 +107,21 @@ class ArgsTest(unittest.TestCase):
         self.assertTrue((Path(self.tmp.name) / "engine.rc").exists())
 
     def test_options(self):
+        with mock.patch.object(engine, "IS_WINDOWS", False):
+            self._test_options()
+
+    def test_windows_fullscreen_and_user_sink(self):
+        with mock.patch.object(engine, "IS_WINDOWS", True):
+            a = self.args(fullscreen=True)
+            self.assertNotIn("-fs", a)
+            self.assertIn("fullscreen=true", a[a.index("-vs") + 1])
+            # eigenes -vs in den Zusatzoptionen: keine d3d11-Optionen, die daran kleben bleiben
+            a = self.args(fullscreen=True, extra_args="-vs d3d12videosink")
+            self.assertEqual(a.count("-vs"), 1)
+            self.assertIn("-fs", a)
+            self.assertEqual(a[a.index("-vs") + 1], "d3d12videosink")
+
+    def _test_options(self):
         a = self.args(resolution="4K", fps=30, pin_enabled=True, fullscreen=True, audio=False,
                       takeover=False, port=7100, rotation="R", extra_args="-vsync no")
         self.assertEqual(a[a.index("-s") + 1], "3840x2160@30")

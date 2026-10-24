@@ -109,6 +109,10 @@ def pick_work_area(saved: Optional[Rect], work_areas: List[Rect], fallback: Rect
     return saved, best
 
 
+def fits_inside(r: Rect, work: Rect) -> bool:
+    return work.left <= r.left and work.top <= r.top and r.right <= work.right and r.bottom <= work.bottom
+
+
 def rect_from_list(value) -> Optional[Rect]:
     if isinstance(value, (list, tuple)) and len(value) == 4 and all(isinstance(v, int) for v in value):
         r = Rect(*value)
@@ -247,21 +251,25 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
         SendMessageTimeoutW(hwnd, msg, wparam, lparam, SMTO_ABORTIFHUNG, 250, ctypes.byref(result))
 
     class _WinState:
-        __slots__ = ("seen", "fitted", "rect", "settle")
+        __slots__ = ("seen", "fitted", "away", "rect", "target", "settle")
 
         def __init__(self) -> None:
             self.seen = 0          # Anzahl Abfragen seit dem Erscheinen
-            self.fitted = False    # im Normalzustand bereits eingepasst?
+            self.fitted = False    # jemals eingepasst?
+            self.away = False      # gerade (oder zuletzt) minimiert/maximiert/Vollbild
             self.rect = None       # zuletzt bekanntes Rechteck (Basis für "vom Nutzer bewegt")
-            self.settle = 0        # Abfragen, in denen eigene Änderungen noch ankommen
+            self.target = None     # Rechteck der eigenen, evtl. noch ausstehenden Positionierung
+            self.settle = 0        # Abfragen, in denen die eigene Positionierung ankommen darf
 
     class VideoWindowManager:
         """Wird regelmäßig (alle ~300 ms) aus der Tk-Hauptschleife aufgerufen.
 
         GStreamer verschiebt/skaliert sein Fenster nach dem ersten Anzeigen nie wieder (auch nicht
         bei Drehung des iPhones); jede Sitzung bekommt aber ein neues Fenster. Vollbild (Alt+Enter)
-        heißt: Rahmen weg + maximiert. Solche Fenster bleiben unangetastet; kehrt ein Fenster in
-        den Normalzustand zurück, wird es (wieder) eingepasst.
+        heißt: Rahmen weg + maximiert. Minimierte, maximierte und Vollbild-Fenster bleiben
+        unangetastet. Kehrt ein Fenster in den Normalzustand zurück, bleibt die von Windows bzw.
+        GStreamer wiederhergestellte Position erhalten – eingepasst wird nur ein Fenster, das noch
+        nie eingepasst war (z. B. im Vollbild gestartet) oder das nicht auf seinen Monitor passt.
         """
 
         GRACE = 2              # Abfragen warten, bis ein neues Fenster fertig angezeigt ist
@@ -306,10 +314,14 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
                 if st.seen < (self.GRACE_FULLSCREEN if fullscreen else self.GRACE):
                     continue
                 if self._is_fullscreen_or_maximized(hwnd):
-                    st.fitted = False      # beim Zurückkehren erneut einpassen
+                    st.away = True
+                    st.settle = 0
                     continue
                 if not st.fitted:
                     self._fit(hwnd, st, scale_percent, rect_from_list(saved), video_size)
+                elif st.away:
+                    st.away = False
+                    self._returned(hwnd, st, scale_percent, saved, video_size)
                 else:
                     self._track(hwnd, st)
 
@@ -348,24 +360,52 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
             after = HWND_TOPMOST if self._topmost else HWND_NOTOPMOST
             SetWindowPos(hwnd, after, target.left, target.top, target.width, target.height,
                          SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
-            st.fitted, st.rect, st.settle = True, target, self.SETTLE
+            st.fitted, st.target, st.settle = True, target, self.SETTLE
+
+        def _returned(self, hwnd, st: "_WinState", scale_percent: int, saved,
+                      video_size: Optional[Tuple[int, int]]) -> None:
+            """Zurück aus minimiert/maximiert/Vollbild: Wiederhergestelltes behalten."""
+            now = self._rect_of(hwnd)
+            if now is None:
+                return
+            if not fits_inside(now, _work_area_of(hwnd)):
+                self._fit(hwnd, st, scale_percent, rect_from_list(saved), video_size)
+                return
+            if st.rect is not None and now != st.rect:
+                self._report(st, now)      # z. B. maximiert auf anderen Monitor geschoben
+            st.rect = now
+
+        @staticmethod
+        def _rect_of(hwnd) -> Optional[Rect]:
+            r = _RECT()
+            if not GetWindowRect(hwnd, ctypes.byref(r)):
+                return None
+            return _rect(r)
+
+        def _report(self, st: "_WinState", now: Rect) -> None:
+            st.rect = now
+            if self.on_saved and now.width > 0 and now.height > 0:
+                self.on_saved(list(now))
 
         def _track(self, hwnd, st: "_WinState") -> None:
             """Verschiebt/zieht der Nutzer das Fenster, Position merken."""
-            r = _RECT()
-            if not GetWindowRect(hwnd, ctypes.byref(r)):
+            now = self._rect_of(hwnd)
+            if now is None:
                 return
-            now = _rect(r)
             if st.settle:
                 # eigene (asynchrone) Positionierung ist evtl. noch unterwegs
-                st.settle = 0 if now == st.rect else st.settle - 1
-                if st.settle == 0:
-                    st.rect = now
+                if now == st.target:
+                    st.settle, st.rect = 0, now
+                    return
+                st.settle -= 1
+                if st.settle:
+                    return
+                # kam nie exakt an (Rundung) oder der Nutzer hat inzwischen verschoben:
+                # aktuelle Lage als vom Nutzer gewählt übernehmen
+                self._report(st, now)
                 return
-            if now != st.rect and now.width > 0 and now.height > 0:
-                st.rect = now
-                if self.on_saved:
-                    self.on_saved(list(now))
+            if now != st.rect:
+                self._report(st, now)
 
         def set_topmost(self, on: bool) -> None:
             self._topmost = on

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from luairplay.winvideo import Rect, fit_size, pick_work_area, plan_window, rect_from_list  # noqa: E402
+from luairplay.winvideo import Rect, fit_size, fits_inside, pick_work_area, plan_window, rect_from_list  # noqa: E402
 
 WORK = Rect(0, 0, 1920, 1040)          # 1080p-Monitor minus Taskleiste
 FRAME = (8, 31, 8, 8)                  # typischer Windows-10/11-Rahmen
@@ -76,6 +76,11 @@ class SavedTest(unittest.TestCase):
     def test_saved_on_unplugged_monitor_is_dropped(self):
         areas = [Rect(0, 0, 1920, 1040)]
         self.assertEqual(pick_work_area(Rect(4000, 0, 4800, 500), areas, areas[0]), (None, areas[0]))
+
+    def test_fits_inside(self):
+        self.assertTrue(fits_inside(Rect(10, 10, 800, 600), WORK))
+        self.assertFalse(fits_inside(Rect(0, 0, 1936, 1119), WORK))   # GStreamers 0,0-Fenster
+        self.assertFalse(fits_inside(Rect(-10, 0, 800, 600), WORK))
 
     def test_rect_from_list(self):
         self.assertEqual(rect_from_list([1, 2, 300, 400]), Rect(1, 2, 300, 400))
