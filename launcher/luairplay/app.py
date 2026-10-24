@@ -13,6 +13,7 @@ from tkinter import messagebox, ttk
 from . import __version__
 from .engine import IS_WINDOWS, RESOLUTIONS, Engine, find_engine, local_ipv4_addresses
 from .settings import Settings, config_dir, random_pin
+from .winvideo import VideoWindowManager
 
 APP_TITLE = "Lu AirPlay Receiver"
 ASSETS = Path(__file__).resolve().parent / "assets"
@@ -68,7 +69,15 @@ class App:
         self._build()
         root.protocol("WM_DELETE_WINDOW", self.quit)
 
+        # Videofenster der Engine verschiebbar machen und Position merken (Windows)
+        self.video_windows = VideoWindowManager(icon_path=str(ASSETS / "icon.ico"),
+                                                on_saved=self._video_window_moved)
+        self._moved_rect = None
+        self._moved_ticks = 0
+        self._video_watch_failed = False
         self.root.after(100, self._poll)
+        if IS_WINDOWS:
+            self.root.after(300, self._watch_video)
         if self.settings.autostart:
             self.root.after(300, self.start)
         else:
@@ -280,6 +289,33 @@ class App:
             pass
         self.root.after(100, self._poll)
 
+    def _watch_video(self) -> None:
+        try:
+            pid = self.engine.proc.pid if self.engine.running else None
+            title = f"Lu AirPlay – {self.client}" if self.client else f"Lu AirPlay – {self.settings.name}"
+            s = self.settings
+            self.video_windows.poll(pid, title, s.window_size, s.always_on_top, s.video_window,
+                                    s.fullscreen)
+        except Exception as e:  # nie die Oberfläche lahmlegen
+            if not self._video_watch_failed:
+                self._video_watch_failed = True
+                self.log_lines.append(f"! Videofenster konnte nicht angepasst werden: {e}")
+        # Position erst speichern, wenn der Nutzer das Fenster losgelassen hat (~1 s ruhig)
+        if self._moved_rect is not None:
+            self._moved_ticks += 1
+            if self._moved_ticks >= 3:
+                self.settings.video_window = self._moved_rect
+                self._moved_rect = None
+                try:
+                    self.settings.save()
+                except OSError:
+                    pass
+        self.root.after(300, self._watch_video)
+
+    def _video_window_moved(self, rect) -> None:
+        self._moved_rect = rect
+        self._moved_ticks = 0
+
     def _handle(self, ev) -> None:
         if ev.kind == "log":
             self.log_lines.append(ev.text)
@@ -375,6 +411,12 @@ class App:
         self.log_window = LogWindow(self)
 
     def quit(self) -> None:
+        if self._moved_rect is not None:
+            self.settings.video_window = self._moved_rect
+            try:
+                self.settings.save()
+            except OSError:
+                pass
         self.stopping = True
         self.engine.stop()
         self.root.destroy()
@@ -407,6 +449,8 @@ class SettingsDialog:
             "resolution": tk.StringVar(value=s.resolution),
             "fps": tk.StringVar(value=str(s.fps)),
             "fullscreen": tk.BooleanVar(value=s.fullscreen),
+            "always_on_top": tk.BooleanVar(value=s.always_on_top),
+            "window_size": tk.StringVar(value=f"{s.window_size} %"),
             "keep_window": tk.BooleanVar(value=s.keep_window),
             "software_decoding": tk.BooleanVar(value=s.software_decoding),
             "rotation": tk.StringVar(value={"": "Keine", "R": "90° rechts", "L": "90° links"}[s.rotation or ""]),
@@ -444,6 +488,17 @@ class SettingsDialog:
         check(video, "fullscreen", "Im Vollbild starten (Alt+Enter wechselt)" if IS_WINDOWS
               else "Im Vollbild starten")
         check(video, "keep_window", "Videofenster nach dem Trennen offen lassen")
+        if IS_WINDOWS:
+            check(video, "always_on_top", "Videofenster immer im Vordergrund")
+            win_row = tk.Frame(video, bg=BG)
+            win_row.pack(anchor="w", pady=(6, 0))
+            tk.Label(win_row, text="Fenstergröße beim ersten Öffnen", bg=BG, fg=MUTED,
+                     font=app.f_small).pack(side="left")
+            ttk.Combobox(win_row, textvariable=self.v["window_size"], values=["50 %", "70 %", "90 %"],
+                         state="readonly", width=6).pack(side="left", padx=8)
+            self.reset_window = False
+            app._button(video, "Fensterposition zurücksetzen", self._reset_window_pos).pack(anchor="w",
+                                                                                         pady=(6, 0))
         check(video, "software_decoding", "Software-Dekodierung (bei Bildfehlern)")
 
         # Ton
@@ -503,6 +558,11 @@ class SettingsDialog:
         top.grab_set()
         top.focus_set()
 
+    def _reset_window_pos(self) -> None:
+        self.reset_window = True
+        messagebox.showinfo(APP_TITLE, "Das Videofenster öffnet sich beim nächsten Mal wieder "
+                                       "zentriert in Standardgröße.", parent=self.top)
+
     def _regen_pin(self) -> None:
         self.new_pin = random_pin()
         self.pin_lbl.configure(text=f"Aktueller Code: {self.new_pin}")
@@ -523,6 +583,7 @@ class SettingsDialog:
         if port_txt and not (port_txt.isdigit() and 1024 <= int(port_txt) <= 65533):
             messagebox.showerror(APP_TITLE, "Der Port muss zwischen 1024 und 65533 liegen.", parent=self.top)
             return
+        before = engine_relevant(s)
         s.video = v["video"].get()
         s.resolution = v["resolution"].get()
         s.fps = int(v["fps"].get())
@@ -540,9 +601,27 @@ class SettingsDialog:
         s.port = int(port_txt) if port_txt else 0
         s.extra_args = v["extra_args"].get().strip()
         s.network_ip = v["network_ip"].get().strip()
+        if IS_WINDOWS:
+            s.always_on_top = v["always_on_top"].get()
+            s.window_size = int(v["window_size"].get().split()[0])
+            if self.reset_window:
+                s.video_window = []
+                self.app._moved_rect = None
+            self.app.video_windows.set_topmost(s.always_on_top)
         s.save()
         self.top.destroy()
-        self.app.restart_if_running()
+        # Fenster-Einstellungen wirken sofort; nur bei Engine-Optionen neu starten
+        if engine_relevant(s) != before:
+            self.app.restart_if_running()
+
+
+# Einstellungen, die die laufende Engine nicht betreffen (kein Neustart nötig)
+_UI_ONLY = {"autostart", "always_on_top", "window_size", "video_window"}
+
+
+def engine_relevant(s: Settings) -> dict:
+    from dataclasses import asdict
+    return {k: v for k, v in asdict(s).items() if k not in _UI_ONLY}
 
 
 def repair_firewall(app: "App", parent: tk.Misc) -> None:

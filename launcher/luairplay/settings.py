@@ -7,7 +7,7 @@ import os
 import random
 import socket
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
@@ -47,6 +47,9 @@ class Settings:
     pin: str = ""
     takeover: bool = True           # neues Gerät übernimmt die laufende Verbindung
     keep_window: bool = False       # Videofenster nach dem Trennen offen lassen
+    always_on_top: bool = False     # Videofenster immer im Vordergrund (Windows)
+    window_size: int = 70           # Startgröße des Videofensters in % des Bildschirms (Windows)
+    video_window: list = field(default_factory=list)  # zuletzt gewählte Position [l, t, r, b]
     software_decoding: bool = False
     rotation: str = ""              # "" | R | L
     flip: str = ""                  # "" | H | V | I
