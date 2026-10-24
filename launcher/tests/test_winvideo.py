@@ -81,6 +81,11 @@ class SavedTest(unittest.TestCase):
         self.assertTrue(fits_inside(Rect(10, 10, 800, 600), WORK))
         self.assertFalse(fits_inside(Rect(0, 0, 1936, 1119), WORK))   # GStreamers 0,0-Fenster
         self.assertFalse(fits_inside(Rect(-10, 0, 800, 600), WORK))
+        # angedockt (Win+Links): sichtbar bündig, GetWindowRect ragt um die Greifränder hinaus
+        self.assertFalse(fits_inside(Rect(-7, 0, 967, 1047), WORK))
+        self.assertTrue(fits_inside(Rect(-7, 0, 967, 1047), WORK, FRAME))
+        self.assertFalse(fits_inside(Rect(0, 0, 1936, 1119), WORK, FRAME))
+        self.assertFalse(fits_inside(Rect(0, -1, 800, 600), WORK, FRAME))  # oben gibt es keinen
 
     def test_rect_from_list(self):
         self.assertEqual(rect_from_list([1, 2, 300, 400]), Rect(1, 2, 300, 400))

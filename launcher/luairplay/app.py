@@ -11,7 +11,8 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from . import __version__
-from .engine import IS_WINDOWS, RESOLUTIONS, Engine, find_engine, local_ipv4_addresses
+from .engine import (IS_WINDOWS, RESOLUTIONS, Engine, effective_rotation, find_engine,
+                     local_ipv4_addresses)
 from .settings import Settings, config_dir, random_pin
 from .winvideo import VideoWindowManager
 
@@ -295,8 +296,9 @@ class App:
             pid = self.engine.proc.pid if self.engine.running else None
             title = f"Lu AirPlay – {self.client}" if self.client else f"Lu AirPlay – {self.settings.name}"
             s = self.settings
-            self.video_windows.poll(pid, title, s.window_size, s.always_on_top, s.video_window,
-                                    s.fullscreen, self.video_size)
+            if self.video_windows.poll(pid, title, s.window_size, s.always_on_top, s.video_window,
+                                       s.fullscreen, self.video_size):
+                self.video_size = None
         except Exception as e:  # nie die Oberfläche lahmlegen
             if not self._video_watch_failed:
                 self._video_watch_failed = True
@@ -338,7 +340,7 @@ class App:
                 w, h = (int(v) for v in ev.text.split("x"))
             except ValueError:
                 return
-            if self.settings.rotation in ("R", "L"):
+            if effective_rotation(self.settings):
                 w, h = h, w
             self.video_size = (w, h)
         elif ev.kind == "mirror_end":

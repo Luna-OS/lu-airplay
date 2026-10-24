@@ -113,6 +113,17 @@ def video_sink_args(videosink: str, fullscreen: bool, windows: bool) -> List[str
     return args
 
 
+def effective_rotation(s: Settings) -> str:
+    """Drehung, mit der die Engine tatsächlich läuft ("R", "L" oder ""): wie bei UxPlay gewinnt
+    das letzte "-r", also eins aus den zusätzlichen Optionen vor der Einstellung."""
+    rotation = s.rotation if s.rotation in ("R", "L") else ""
+    tokens = s.extra_args.split()
+    for opt, value in zip(tokens, tokens[1:]):
+        if opt == "-r" and value in ("R", "L"):
+            rotation = value
+    return rotation
+
+
 def build_args(s: Settings, engine: Path) -> List[str]:
     cfg = config_dir()
     rc_file = cfg / "engine.rc"

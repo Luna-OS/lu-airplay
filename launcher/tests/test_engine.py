@@ -8,7 +8,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from luairplay import engine  # noqa: E402
-from luairplay.engine import OutputParser, build_args, local_ipv4_addresses, video_sink_args  # noqa: E402
+from luairplay.engine import (OutputParser, build_args, effective_rotation,  # noqa: E402
+                             local_ipv4_addresses, video_sink_args)
 from luairplay.settings import Settings  # noqa: E402
 
 
@@ -120,6 +121,14 @@ class ArgsTest(unittest.TestCase):
             self.assertEqual(a.count("-vs"), 1)
             self.assertIn("-fs", a)
             self.assertEqual(a[a.index("-vs") + 1], "d3d12videosink")
+
+    def test_effective_rotation(self):
+        """Das Videofenster muss wissen, ob die Engine Breite und Höhe tauscht."""
+        self.assertEqual(effective_rotation(Settings()), "")
+        self.assertEqual(effective_rotation(Settings(rotation="L")), "L")
+        self.assertEqual(effective_rotation(Settings(extra_args="-r R")), "R")
+        self.assertEqual(effective_rotation(Settings(rotation="L", extra_args="-vsync no -r R")), "R")
+        self.assertEqual(effective_rotation(Settings(extra_args="-f I")), "")
 
     def _test_options(self):
         a = self.args(resolution="4K", fps=30, pin_enabled=True, fullscreen=True, audio=False,

@@ -109,8 +109,13 @@ def pick_work_area(saved: Optional[Rect], work_areas: List[Rect], fallback: Rect
     return saved, best
 
 
-def fits_inside(r: Rect, work: Rect) -> bool:
-    return work.left <= r.left and work.top <= r.top and r.right <= work.right and r.bottom <= work.bottom
+def fits_inside(r: Rect, work: Rect, frame: Frame = (0, 0, 0, 0)) -> bool:
+    """Liegt r (GetWindowRect) sichtbar im Arbeitsbereich? Unter Windows 10/11 zählen die
+    unsichtbaren Greifränder links/rechts/unten mit; ein angedocktes (Win+Pfeil) oder bündig an
+    Bildschirmrand/Taskleiste geschobenes Fenster ragt deshalb um diese Ränder hinaus."""
+    left, _, right, bottom = frame
+    return (work.left <= r.left + left and work.top <= r.top
+            and r.right - right <= work.right and r.bottom - bottom <= work.bottom)
 
 
 def rect_from_list(value) -> Optional[Rect]:
@@ -251,7 +256,7 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
         SendMessageTimeoutW(hwnd, msg, wparam, lparam, SMTO_ABORTIFHUNG, 250, ctypes.byref(result))
 
     class _WinState:
-        __slots__ = ("seen", "fitted", "away", "rect", "target", "settle")
+        __slots__ = ("seen", "fitted", "away", "rect", "target", "settle", "content")
 
         def __init__(self) -> None:
             self.seen = 0          # Anzahl Abfragen seit dem Erscheinen
@@ -260,6 +265,7 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
             self.rect = None       # zuletzt bekanntes Rechteck (Basis für "vom Nutzer bewegt")
             self.target = None     # Rechteck der eigenen, evtl. noch ausstehenden Positionierung
             self.settle = 0        # Abfragen, in denen die eigene Positionierung ankommen darf
+            self.content = None    # Bildgröße, mit der das Fenster eingepasst wurde
 
     class VideoWindowManager:
         """Wird regelmäßig (alle ~300 ms) aus der Tk-Hauptschleife aufgerufen.
@@ -297,11 +303,15 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
 
         def poll(self, pid: Optional[int], title: str, scale_percent: int, always_on_top: bool,
                  saved: Optional[List[int]], fullscreen: bool,
-                 video_size: Optional[Tuple[int, int]] = None) -> None:
+                 video_size: Optional[Tuple[int, int]] = None) -> bool:
+            """video_size gilt für das nächste neue Fenster. Rückgabe True, sobald ein Fenster damit
+            eingepasst wurde – dann gehört die Größe zu diesem Fenster und ist für spätere Fenster
+            derselben Verbindung (z. B. ein YouTube-Video nach dem Spiegeln) veraltet."""
             self._topmost = always_on_top
+            used = False
             if not pid:
                 self.windows.clear()
-                return
+                return used
             current = top_level_windows_of(pid)
             for hwnd in list(self.windows):
                 if hwnd not in current or not IsWindow(hwnd):
@@ -318,12 +328,13 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
                     st.settle = 0
                     continue
                 if not st.fitted:
-                    self._fit(hwnd, st, scale_percent, rect_from_list(saved), video_size)
+                    used |= self._fit(hwnd, st, scale_percent, rect_from_list(saved), video_size)
                 elif st.away:
                     st.away = False
-                    self._returned(hwnd, st, scale_percent, saved, video_size)
+                    self._returned(hwnd, st, scale_percent, saved)
                 else:
                     self._track(hwnd, st)
+            return used
 
         def retitle(self, title: str) -> None:
             for hwnd in self.windows:
@@ -345,10 +356,11 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
             return not (style & WS_CAPTION)
 
         def _fit(self, hwnd, st: "_WinState", scale_percent: int, saved: Optional[Rect],
-                 video_size: Optional[Tuple[int, int]]) -> None:
+                 video_size: Optional[Tuple[int, int]]) -> bool:
             style = GetWindowLong(hwnd, GWL_STYLE)
             exstyle = GetWindowLong(hwnd, GWL_EXSTYLE)
-            if video_size and video_size[0] > 0 and video_size[1] > 0:
+            used = bool(video_size and video_size[0] > 0 and video_size[1] > 0)
+            if used:
                 cw, ch = video_size
             else:
                 # Notbehelf: Windows hat das zu große Fenster evtl. schon gekappt
@@ -361,15 +373,17 @@ if IS_WINDOWS:  # pragma: no cover - nur unter Windows ausführbar
             SetWindowPos(hwnd, after, target.left, target.top, target.width, target.height,
                          SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
             st.fitted, st.target, st.settle = True, target, self.SETTLE
+            st.content = (cw, ch)
+            return used
 
-        def _returned(self, hwnd, st: "_WinState", scale_percent: int, saved,
-                      video_size: Optional[Tuple[int, int]]) -> None:
+        def _returned(self, hwnd, st: "_WinState", scale_percent: int, saved) -> None:
             """Zurück aus minimiert/maximiert/Vollbild: Wiederhergestelltes behalten."""
             now = self._rect_of(hwnd)
             if now is None:
                 return
-            if not fits_inside(now, _work_area_of(hwnd)):
-                self._fit(hwnd, st, scale_percent, rect_from_list(saved), video_size)
+            frame = _frame_for(GetWindowLong(hwnd, GWL_STYLE), GetWindowLong(hwnd, GWL_EXSTYLE))
+            if not fits_inside(now, _work_area_of(hwnd), frame):
+                self._fit(hwnd, st, scale_percent, rect_from_list(saved), st.content)
                 return
             if st.rect is not None and now != st.rect:
                 self._report(st, now)      # z. B. maximiert auf anderen Monitor geschoben
@@ -420,8 +434,8 @@ else:
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def poll(self, *args, **kwargs) -> None:
-            pass
+        def poll(self, *args, **kwargs) -> bool:
+            return False
 
         def set_topmost(self, on: bool) -> None:
             pass

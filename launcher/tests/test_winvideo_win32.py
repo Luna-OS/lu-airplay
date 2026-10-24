@@ -55,9 +55,11 @@ class Win32VideoWindowTest(unittest.TestCase):
         args = dict(title="Lu AirPlay – Test", scale_percent=70, always_on_top=False, saved=[],
                     fullscreen=False, video_size=None)
         args.update(kw)
+        results = []
         for _ in range(n):
-            mgr.poll(pid, **args)
+            results.append(mgr.poll(pid, **args))
             time.sleep(0.15)
+        return results
 
     def assert_fitted(self, hwnd, work):
         r = self.rect(hwnd)
@@ -101,6 +103,31 @@ class Win32VideoWindowTest(unittest.TestCase):
         self.assertAlmostEqual((r2.left + r2.right) / 2, (moved.left + moved.right) / 2, delta=3)
         self.assertLessEqual(r2.height, moved.height + 1)
         self.assertLess(r2.width, r2.height)
+
+    def test_snapped_window_kept_after_minimize(self):
+        mgr = winvideo.VideoWindowManager()
+        proc, hwnd = self.start_child()
+        work = winvideo._work_area_of(hwnd)
+        used = self.polls(mgr, proc.pid, video_size=(1920, 1080))
+        self.assertEqual(used.count(True), 1, "Videogröße gilt nur für das erste Einpassen")
+
+        # wie Win+Links: sichtbarer Rahmen bündig, GetWindowRect ragt um die Greifränder hinaus
+        left, _, right, bottom = winvideo._frame_for(winvideo.GetWindowLong(hwnd, winvideo.GWL_STYLE),
+                                                     winvideo.GetWindowLong(hwnd, winvideo.GWL_EXSTYLE))
+        snapped = winvideo.Rect(work.left - left + 1, work.top,
+                                work.left + work.width // 2 + right - 1, work.bottom + bottom - 1)
+        winvideo.SetWindowPos(hwnd, None, snapped.left, snapped.top, snapped.width, snapped.height,
+                              winvideo.SWP_NOZORDER)
+        self.polls(mgr, proc.pid, n=3)
+        self.assertEqual(self.rect(hwnd), snapped)
+
+        ctypes.windll.user32.ShowWindowAsync(hwnd, 6)  # SW_MINIMIZE
+        time.sleep(0.5)
+        self.polls(mgr, proc.pid, n=3)
+        ctypes.windll.user32.ShowWindowAsync(hwnd, 9)  # SW_RESTORE
+        time.sleep(0.5)
+        self.polls(mgr, proc.pid, n=5)
+        self.assertEqual(self.rect(hwnd), snapped, "angedocktes Fenster darf nicht verrutschen")
 
     def test_fullscreen_left_alone_and_refitted_on_return(self):
         mgr = winvideo.VideoWindowManager()
