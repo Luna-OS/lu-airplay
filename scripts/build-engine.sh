@@ -31,7 +31,16 @@ if command -v ninja >/dev/null 2>&1; then
     GENERATOR=(-G Ninja)
 fi
 
-cmake -S "$SRC" -B "$BUILD_DIR" "${GENERATOR[@]}" -DCMAKE_BUILD_TYPE=Release
+# UxPlay kompiliert auf x86 standardmäßig mit -march=native, also für die CPU des Rechners,
+# auf dem gebaut wird. Ein so gebautes Paket stürzt auf anderen CPUs mit "Illegal Instruction"
+# (0xC000001D) ab, z. B. wenn der CI-Server AVX-512 hat und der PC des Nutzers nicht.
+# Für Pakete deshalb immer portabel bauen; LU_NATIVE=1 baut nur für diesen Rechner.
+PORTABLE=(-DNO_MARCH_NATIVE=ON)
+if [ "${LU_NATIVE:-0}" = "1" ]; then
+    PORTABLE=()
+fi
+
+cmake -S "$SRC" -B "$BUILD_DIR" "${GENERATOR[@]}" -DCMAKE_BUILD_TYPE=Release "${PORTABLE[@]}"
 cmake --build "$BUILD_DIR" --parallel
 
 echo

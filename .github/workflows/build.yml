@@ -32,7 +32,12 @@ jobs:
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
 
       - name: Engine bauen
-        run: scripts/build-engine.sh
+        run: |
+          scripts/build-engine.sh
+          if objdump -d build/engine/uxplay | grep -qE '%[yz]mm'; then
+            echo "::error::uxplay enthält AVX/AVX-512-Befehle – nicht portabel"
+            exit 1
+          fi
 
       - name: Unit-Tests
         working-directory: launcher
@@ -99,6 +104,11 @@ jobs:
         run: |
           git config --global --add safe.directory '*'
           scripts/build-engine.sh
+          # Engine muss auf jeder x86-64-CPU laufen (kein AVX/AVX-512 vom Build-Rechner)
+          if objdump -d build/engine/uxplay.exe | grep -qE '%[yz]mm'; then
+            echo "::error::uxplay.exe enthält AVX/AVX-512-Befehle – würde auf älteren CPUs abstürzen"
+            exit 1
+          fi
           scripts/package-windows.sh dist/LuAirPlay
 
       - uses: actions/setup-python@v5
